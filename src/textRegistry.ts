@@ -1,8 +1,11 @@
-import db from './database.js';
+// ============================================================
+// Blade X — Central Text Registry (v5 — Turso)
+// ============================================================
+import { dbClient } from './database.js';
 import { config } from './config.js';
 
 // ============================================================
-// Blade X — Central Text Registry (v4 — Self Roles + Welcome)
+// Types
 // ============================================================
 export interface TextDef {
   key: string;
@@ -68,9 +71,7 @@ export const TEXT_REGISTRY: TextDef[] = [
   { key: 'moderation.error.permission', category: 'moderation', description: 'خطأ الصلاحيات', defaultValue: '❌ ليس لديك صلاحية.', componentType: 'ephemeral' },
   { key: 'moderation.error.hierarchy', category: 'moderation', description: 'خطأ التسلسل', defaultValue: '❌ رتبة العضو أعلى من رتبة البوت.', componentType: 'ephemeral' },
 
-  // ============================================================
-  // Self Roles
-  // ============================================================
+  // ===== Self Roles =====
   { key: 'selfroles.panel.title', category: 'selfroles', description: 'عنوان لوحة الرولات', defaultValue: '🎭 Self-Assignable Roles', componentType: 'text', maxLength: 256 },
   { key: 'selfroles.panel.description', category: 'selfroles', description: 'وصف لوحة الرولات', defaultValue: '**اختر الرولات التي تناسبك بالضغط على الأزرار أدناه.**\n*Click the buttons below to toggle your roles.*', componentType: 'text', maxLength: 2000 },
   { key: 'selfroles.panel.instructions', category: 'selfroles', description: 'تعليمات تظهر تحت الوصف', defaultValue: '**دليل الألوان:**\n🟢 **أخضر** = تملك الرول\n⚪ **رمادي** = لا تملك الرول', componentType: 'text', maxLength: 2000 },
@@ -87,62 +88,13 @@ export const TEXT_REGISTRY: TextDef[] = [
   { key: 'selfroles.error.generic', category: 'selfroles', description: 'خطأ عام في Self Roles', defaultValue: '❌ حدث خطأ.', componentType: 'ephemeral' },
   { key: 'selfroles.empty.no_roles', category: 'selfroles', description: 'رسالة عند عدم وجود رولات', defaultValue: '⚠️ لا توجد رولات متاحة.', componentType: 'ephemeral' },
 
-  // ============================================================
-  // Welcome System (Phase 1 — wired into welcome.ts)
-  // ============================================================
-  {
-    key: 'welcome.panel.title',
-    category: 'welcome',
-    description: 'عنوان رسالة الترحيب (يدعم {emoji})',
-    defaultValue: '{emoji} Welcome',
-    variables: ['emoji', 'username', 'displayName', 'server', 'memberCount'],
-    componentType: 'text',
-    maxLength: 256,
-  },
-  {
-    key: 'welcome.panel.body',
-    category: 'welcome',
-    description: 'نص الترحيب العام — يُستخدم إذا لم يُعيَّن body_ar أو body_en',
-    defaultValue: '{user} — {phrase}',
-    variables: ['user', 'username', 'displayName', 'server', 'memberCount', 'phrase', 'emoji'],
-    componentType: 'text',
-    maxLength: 2000,
-  },
-  {
-    key: 'welcome.panel.body_ar',
-    category: 'welcome',
-    description: 'النص العربي في رسالة الترحيب (اختياري — يستبدل body)',
-    defaultValue: '',
-    variables: ['user', 'username', 'displayName', 'server', 'memberCount', 'phrase', 'emoji'],
-    componentType: 'text',
-    maxLength: 2000,
-  },
-  {
-    key: 'welcome.panel.body_en',
-    category: 'welcome',
-    description: 'النص الإنجليزي في رسالة الترحيب (اختياري — يستبدل body)',
-    defaultValue: '',
-    variables: ['user', 'username', 'displayName', 'server', 'memberCount', 'phrase', 'emoji'],
-    componentType: 'text',
-    maxLength: 2000,
-  },
-  {
-    key: 'welcome.panel.footer',
-    category: 'welcome',
-    description: 'فوتر رسالة الترحيب',
-    defaultValue: 'Blade X · Welcome',
-    componentType: 'text',
-    maxLength: 200,
-  },
-  {
-    key: 'welcome.sayhi.text',
-    category: 'welcome',
-    description: 'نص رسالة Say Hi',
-    defaultValue: '**{user}** says hi to **{target}** {emoji}',
-    variables: ['user', 'target', 'emoji'],
-    componentType: 'text',
-    maxLength: 1000,
-  },
+  // ===== Welcome System =====
+  { key: 'welcome.panel.title', category: 'welcome', description: 'عنوان رسالة الترحيب (يدعم {emoji})', defaultValue: '{emoji} Welcome', variables: ['emoji', 'username', 'displayName', 'server', 'memberCount'], componentType: 'text', maxLength: 256 },
+  { key: 'welcome.panel.body', category: 'welcome', description: 'نص الترحيب العام — يُستخدم إذا لم يُعيَّن body_ar أو body_en', defaultValue: '{user} — {phrase}', variables: ['user', 'username', 'displayName', 'server', 'memberCount', 'phrase', 'emoji'], componentType: 'text', maxLength: 2000 },
+  { key: 'welcome.panel.body_ar', category: 'welcome', description: 'النص العربي في رسالة الترحيب (اختياري — يستبدل body)', defaultValue: '', variables: ['user', 'username', 'displayName', 'server', 'memberCount', 'phrase', 'emoji'], componentType: 'text', maxLength: 2000 },
+  { key: 'welcome.panel.body_en', category: 'welcome', description: 'النص الإنجليزي في رسالة الترحيب (اختياري — يستبدل body)', defaultValue: '', variables: ['user', 'username', 'displayName', 'server', 'memberCount', 'phrase', 'emoji'], componentType: 'text', maxLength: 2000 },
+  { key: 'welcome.panel.footer', category: 'welcome', description: 'فوتر رسالة الترحيب', defaultValue: 'Blade X · Welcome', componentType: 'text', maxLength: 200 },
+  { key: 'welcome.sayhi.text', category: 'welcome', description: 'نص رسالة Say Hi', defaultValue: '**{user}** says hi to **{target}** {emoji}', variables: ['user', 'target', 'emoji'], componentType: 'text', maxLength: 1000 },
   { key: 'welcome.sayhi.footer', category: 'welcome', description: 'فوتر Say Hi', defaultValue: 'Blade X · Welcome', componentType: 'text', maxLength: 200 },
   { key: 'welcome.sayhi.success', category: 'welcome', description: 'رسالة نجاح Say Hi', defaultValue: '✅ تم إرسال ترحيبك!', componentType: 'ephemeral' },
   { key: 'welcome.sayhi.already', category: 'welcome', description: 'رسالة عند الترحيب مسبقًا', defaultValue: '⚠️ رحّبت بهذا العضو بالفعل.', componentType: 'ephemeral' },
@@ -177,9 +129,6 @@ export const COLOR_REGISTRY: ColorDef[] = [
   { key: 'color.warning', category: 'general', description: 'لون التحذير', defaultValue: 0xfee75c },
 ];
 
-// ============================================================
-// Diagnostics
-// ============================================================
 console.log(`[Blade X] 🔍 textRegistry.ts LOADED — TEXT_REGISTRY=${TEXT_REGISTRY.length} COLOR_REGISTRY=${COLOR_REGISTRY.length}`);
 
 if (TEXT_REGISTRY.length === 0) {
@@ -187,7 +136,82 @@ if (TEXT_REGISTRY.length === 0) {
 }
 
 // ============================================================
-// Auto-discovery helpers
+// Caches (loaded via initTextRegistry)
+// ============================================================
+interface CacheEntry { value: string; updatedAt: number | null; }
+
+let textsCache: Map<string, CacheEntry> | null = null;
+let colorsCache: Map<string, CacheEntry> | null = null;
+let FULL_REGISTRY: TextDef[] | null = null;
+let warnedNotInitialized = false;
+
+function warnNotInit(): void {
+  if (!warnedNotInitialized) {
+    console.warn('[Blade X] ⚠️ TextRegistry not initialized — call initTextRegistry() after initDatabase()');
+    warnedNotInitialized = true;
+  }
+}
+
+// ============================================================
+// Init — call after initDatabase()
+// ============================================================
+export async function initTextRegistry(): Promise<void> {
+  // 1. Create tables if missing (idempotent)
+  await dbClient.executeMultiple(`
+    CREATE TABLE IF NOT EXISTS custom_texts (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_by TEXT,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS custom_colors (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_by TEXT,
+      updated_at INTEGER NOT NULL
+    );
+  `);
+
+  // 2. Load custom_texts cache
+  const textRows = await dbClient.execute('SELECT key, value, updated_at FROM custom_texts');
+  textsCache = new Map();
+  for (const row of textRows.rows) {
+    textsCache.set(String(row.key), {
+      value: String(row.value ?? ''),
+      updatedAt: row.updated_at != null ? Number(row.updated_at) : null,
+    });
+  }
+
+  // 3. Load custom_colors cache
+  const colorRows = await dbClient.execute('SELECT key, value, updated_at FROM custom_colors');
+  colorsCache = new Map();
+  for (const row of colorRows.rows) {
+    colorsCache.set(String(row.key), {
+      value: String(row.value ?? ''),
+      updatedAt: row.updated_at != null ? Number(row.updated_at) : null,
+    });
+  }
+
+  // 4. Discovery from settings (legacy keys)
+  const settingsRows = await dbClient.execute(
+    "SELECT key, value FROM settings WHERE key LIKE 'text.%' OR key LIKE 'color.%'"
+  );
+  const discoveredFromSettings = new Map<string, string>();
+  for (const row of settingsRows.rows) {
+    discoveredFromSettings.set(String(row.key), String(row.value ?? ''));
+  }
+
+  // 5. Build FULL_REGISTRY
+  FULL_REGISTRY = buildFullRegistryInternal(discoveredFromSettings);
+
+  const explicitCount = TEXT_REGISTRY.length;
+  const configCount = FULL_REGISTRY.filter(t => !TEXT_REGISTRY.some(e => e.key === t.key)).length - discoveredFromSettings.size;
+  const settingsCount = discoveredFromSettings.size;
+  console.log(`[Blade X] ✅ Text Registry built: ${FULL_REGISTRY.length} total (${explicitCount} explicit + ${Math.max(0, configCount)} from config + ${settingsCount} from settings)`);
+}
+
+// ============================================================
+// Registry builder (internal — populated once by initTextRegistry)
 // ============================================================
 function inferCategory(key: string): string {
   const parts = key.split('.');
@@ -215,25 +239,18 @@ function inferVariablesFromValue(value: string): string[] {
   return vars;
 }
 
-// ============================================================
-// Build FULL registry
-// ============================================================
-let FULL_REGISTRY: TextDef[] | null = null;
-
-function buildFullRegistry(): TextDef[] {
-  if (FULL_REGISTRY) return FULL_REGISTRY;
-
+function buildFullRegistryInternal(discoveredFromSettings: Map<string, string>): TextDef[] {
   const seen = new Set<string>();
   const result: TextDef[] = [];
 
+  // Explicit entries first
   for (const def of TEXT_REGISTRY) {
     if (seen.has(def.key)) continue;
     seen.add(def.key);
     result.push(def);
   }
-  const explicitCount = result.length;
 
-  let configCount = 0;
+  // From config.defaultTexts
   try {
     const defaults = (config?.defaultTexts ?? {}) as Record<string, string>;
     for (const [key, value] of Object.entries(defaults)) {
@@ -247,87 +264,27 @@ function buildFullRegistry(): TextDef[] {
         variables: inferVariablesFromValue(value),
         componentType: inferComponentType(key),
       });
-      configCount++;
     }
   } catch (e) {
     console.warn('[Blade X] ⚠️ config.defaultTexts discovery failed:', e);
   }
 
-  let settingsCount = 0;
-  try {
-    const rows = db
-      .prepare("SELECT key, value FROM settings WHERE key LIKE 'text.%' OR key LIKE 'color.%'")
-      .all() as { key: string; value: string }[];
-    for (const row of rows) {
-      if (seen.has(row.key)) continue;
-      seen.add(row.key);
-      result.push({
-        key: row.key,
-        category: inferCategory(row.key),
-        description: row.key,
-        defaultValue: row.value,
-        variables: inferVariablesFromValue(row.value),
-        componentType: inferComponentType(row.key),
-      });
-      settingsCount++;
-    }
-  } catch (e) {
-    console.warn('[Blade X] ⚠️ settings discovery failed:', e);
+  // From settings (legacy)
+  for (const [key, value] of discoveredFromSettings) {
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push({
+      key,
+      category: inferCategory(key),
+      description: key,
+      defaultValue: value,
+      variables: inferVariablesFromValue(value),
+      componentType: inferComponentType(key),
+    });
   }
 
-  FULL_REGISTRY = result;
-  console.log(`[Blade X] ✅ Text Registry built: ${result.length} total (${explicitCount} explicit + ${configCount} from config + ${settingsCount} from settings)`);
   return result;
 }
-
-buildFullRegistry();
-
-// ============================================================
-// DB schema
-// ============================================================
-try {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS custom_texts (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL,
-      updated_by TEXT,
-      updated_at INTEGER NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS custom_colors (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL,
-      updated_by TEXT,
-      updated_at INTEGER NOT NULL
-    );
-  `);
-} catch (e) {
-  console.error('[Blade X] ❌ textRegistry: failed to create tables:', e);
-}
-
-// ============================================================
-// Cache
-// ============================================================
-let textsCache: Map<string, string> | null = null;
-let cacheTime = 0;
-const CACHE_MS = 30_000;
-
-function loadCache(): Map<string, string> {
-  const now = Date.now();
-  if (textsCache && now - cacheTime < CACHE_MS) return textsCache;
-  try {
-    const rows = db.prepare('SELECT key, value FROM custom_texts').all() as { key: string; value: string }[];
-    const map = new Map<string, string>();
-    for (const r of rows) map.set(r.key, r.value);
-    textsCache = map;
-  } catch (e) {
-    console.warn('[Blade X] ⚠️ loadCache failed:', e);
-    textsCache = new Map();
-  }
-  cacheTime = now;
-  return textsCache;
-}
-
-export function invalidateTextCache(): void { textsCache = null; cacheTime = 0; }
 
 // ============================================================
 // Template resolver
@@ -340,50 +297,60 @@ export function resolveTemplate(template: string, vars: Record<string, string | 
   });
 }
 
+// ============================================================
+// Sync readers
+// ============================================================
 export function getText(key: string, vars: Record<string, string | number> = {}, fallback = ''): string {
-  const cache = loadCache();
-  const override = cache.get(key);
-  const registry = buildFullRegistry();
-  const def = registry.find((t) => t.key === key);
-  const template = override ?? def?.defaultValue ?? fallback;
+  const override = textsCache?.get(key);
+  const def = FULL_REGISTRY?.find((t) => t.key === key);
+  const template = override?.value ?? def?.defaultValue ?? fallback;
   if (!template) return fallback;
   return resolveTemplate(template, vars);
 }
 
 export function getRawText(key: string): string {
-  const cache = loadCache();
-  const override = cache.get(key);
-  if (override !== undefined) return override;
-  const registry = buildFullRegistry();
-  const def = registry.find((t) => t.key === key);
+  if (!textsCache) {
+    warnNotInit();
+    return '';
+  }
+  const override = textsCache.get(key);
+  if (override !== undefined) return override.value;
+  const def = FULL_REGISTRY?.find((t) => t.key === key);
   return def?.defaultValue ?? '';
 }
 
-export function setText(key: string, value: string, updatedBy?: string): { ok: boolean; error?: string } {
-  const registry = buildFullRegistry();
-  const def = registry.find((t) => t.key === key);
+// ============================================================
+// Writers (async)
+// ============================================================
+export async function setText(key: string, value: string, updatedBy?: string): Promise<{ ok: boolean; error?: string }> {
+  const def = FULL_REGISTRY?.find((t) => t.key === key);
   if (!def) return { ok: false, error: `المفتاح ${key} غير مسجل` };
   if (def.maxLength && value.length > def.maxLength) {
     return { ok: false, error: `النص أطول من الحد (${def.maxLength})` };
   }
   try {
-    db.prepare(`
-      INSERT INTO custom_texts (key, value, updated_by, updated_at)
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = excluded.updated_at
-    `).run(key, value, updatedBy ?? null, Date.now());
-    invalidateTextCache();
+    const now = Date.now();
+    await dbClient.execute({
+      sql: `INSERT INTO custom_texts (key, value, updated_by, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
+      args: [key, value, updatedBy ?? null, now],
+    });
+    if (!textsCache) textsCache = new Map();
+    textsCache.set(key, { value, updatedAt: now });
     return { ok: true };
   } catch (e: any) {
     return { ok: false, error: e?.message ?? 'DB error' };
   }
 }
 
-export function resetText(key: string): void {
+export async function resetText(key: string): Promise<void> {
   try {
-    db.prepare('DELETE FROM custom_texts WHERE key = ?').run(key);
-    invalidateTextCache();
-  } catch (e) { console.error('[Blade X] ❌ resetText:', e); }
+    await dbClient.execute({ sql: 'DELETE FROM custom_texts WHERE key = ?', args: [key] });
+    textsCache?.delete(key);
+  } catch (e) {
+    console.error('[Blade X] ❌ resetText:', e);
+  }
 }
 
 // ============================================================
@@ -404,35 +371,27 @@ export interface TextRow {
 }
 
 export function listAllTexts(): TextRow[] {
-  const cache = loadCache();
-  const registry = buildFullRegistry();
-
-  let updatedMap = new Map<string, number>();
-  try {
-    const rows = db.prepare('SELECT key, updated_at FROM custom_texts').all() as { key: string; updated_at: number }[];
-    updatedMap = new Map(rows.map((r) => [r.key, r.updated_at]));
-  } catch { /* ignore */ }
-
+  const registry = FULL_REGISTRY ?? [];
   return registry.map((def) => {
-    const override = cache.get(def.key);
+    const override = textsCache?.get(def.key);
     return {
       key: def.key,
       category: def.category,
       categoryLabel: CATEGORY_LABELS[def.category] ?? def.category,
       description: def.description,
       defaultValue: def.defaultValue,
-      currentValue: override ?? def.defaultValue,
+      currentValue: override?.value ?? def.defaultValue,
       isCustomized: override !== undefined,
       variables: def.variables ?? [],
       maxLength: def.maxLength,
       componentType: def.componentType,
-      updatedAt: updatedMap.get(def.key) ?? null,
+      updatedAt: override?.updatedAt ?? null,
     };
   });
 }
 
 export function listCategories(): string[] {
-  const registry = buildFullRegistry();
+  const registry = FULL_REGISTRY ?? [];
   const set = new Set<string>();
   for (const t of registry) set.add(t.category);
   return [...set].sort();
@@ -441,51 +400,40 @@ export function listCategories(): string[] {
 // ============================================================
 // Colors
 // ============================================================
-let colorsCache: Map<string, string> | null = null;
-
-function loadColorsCache(): Map<string, string> {
-  if (colorsCache) return colorsCache;
-  try {
-    const rows = db.prepare('SELECT key, value FROM custom_colors').all() as { key: string; value: string }[];
-    colorsCache = new Map(rows.map((r) => [r.key, r.value]));
-  } catch {
-    colorsCache = new Map();
-  }
-  return colorsCache;
-}
-
-export function invalidateColorsCache(): void { colorsCache = null; }
-
 export function getColor(key: string, fallback?: number): number {
   const def = COLOR_REGISTRY.find((c) => c.key === key);
-  const cache = loadColorsCache();
-  const override = cache.get(key);
-  const raw = override ?? (def ? `#${def.defaultValue.toString(16).padStart(6, '0')}` : null);
+  const override = colorsCache?.get(key);
+  const raw = override?.value ?? (def ? `#${def.defaultValue.toString(16).padStart(6, '0')}` : null);
   if (!raw) return fallback ?? 0x5865f2;
   try { return parseInt(raw.replace('#', ''), 16); }
   catch { return fallback ?? def?.defaultValue ?? 0x5865f2; }
 }
 
-export function setColor(key: string, hex: string, updatedBy?: string): { ok: boolean; error?: string } {
+export async function setColor(key: string, hex: string, updatedBy?: string): Promise<{ ok: boolean; error?: string }> {
   if (!/^#[0-9a-fA-F]{6}$/.test(hex)) return { ok: false, error: 'صيغة HEX غير صحيحة' };
   try {
-    db.prepare(`
-      INSERT INTO custom_colors (key, value, updated_by, updated_at)
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = excluded.updated_at
-    `).run(key, hex, updatedBy ?? null, Date.now());
-    invalidateColorsCache();
+    const now = Date.now();
+    await dbClient.execute({
+      sql: `INSERT INTO custom_colors (key, value, updated_by, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
+      args: [key, hex, updatedBy ?? null, now],
+    });
+    if (!colorsCache) colorsCache = new Map();
+    colorsCache.set(key, { value: hex, updatedAt: now });
     return { ok: true };
   } catch (e: any) {
     return { ok: false, error: e?.message ?? 'DB error' };
   }
 }
 
-export function resetColor(key: string): void {
+export async function resetColor(key: string): Promise<void> {
   try {
-    db.prepare('DELETE FROM custom_colors WHERE key = ?').run(key);
-    invalidateColorsCache();
-  } catch (e) { console.error('[Blade X] ❌ resetColor:', e); }
+    await dbClient.execute({ sql: 'DELETE FROM custom_colors WHERE key = ?', args: [key] });
+    colorsCache?.delete(key);
+  } catch (e) {
+    console.error('[Blade X] ❌ resetColor:', e);
+  }
 }
 
 export interface ColorRow {
@@ -499,17 +447,16 @@ export interface ColorRow {
 }
 
 export function listAllColors(): ColorRow[] {
-  const cache = loadColorsCache();
   return COLOR_REGISTRY.map((def) => {
     const defaultHex = `#${def.defaultValue.toString(16).padStart(6, '0')}`;
-    const override = cache.get(def.key);
+    const override = colorsCache?.get(def.key);
     return {
       key: def.key,
       category: def.category,
       categoryLabel: CATEGORY_LABELS[def.category] ?? def.category,
       description: def.description,
       defaultValue: defaultHex,
-      currentValue: override ?? defaultHex,
+      currentValue: override?.value ?? defaultHex,
       isCustomized: override !== undefined,
     };
   });
@@ -528,21 +475,14 @@ export function getRegistryDiagnostics(): {
   textRegistryLength: number;
   colorRegistryLength: number;
 } {
-  const registry = buildFullRegistry();
-  let dbTextOverrides = 0;
-  let dbColorOverrides = 0;
-  try {
-    dbTextOverrides = (db.prepare('SELECT COUNT(*) as c FROM custom_texts').get() as { c: number }).c;
-    dbColorOverrides = (db.prepare('SELECT COUNT(*) as c FROM custom_colors').get() as { c: number }).c;
-  } catch { /* ignore */ }
-
+  const registry = FULL_REGISTRY ?? [];
   return {
     explicitCount: TEXT_REGISTRY.length,
     totalCount: registry.length,
     categoryCount: new Set(registry.map((t) => t.category)).size,
     colorCount: COLOR_REGISTRY.length,
-    dbTextOverrides,
-    dbColorOverrides,
+    dbTextOverrides: textsCache?.size ?? 0,
+    dbColorOverrides: colorsCache?.size ?? 0,
     textRegistryLength: TEXT_REGISTRY.length,
     colorRegistryLength: COLOR_REGISTRY.length,
   };

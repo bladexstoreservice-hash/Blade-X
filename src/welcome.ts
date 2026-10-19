@@ -1,3 +1,6 @@
+// ============================================================
+// Blade X — Welcome System (v5 — Turso)
+// ============================================================
 import {
   GuildMember, AttachmentBuilder, MessageFlags, ButtonInteraction,
   ActionRowBuilder, ButtonBuilder, ButtonStyle, TextChannel, Client,
@@ -6,7 +9,7 @@ import { createCanvas, loadImage, GlobalFonts } from '@napi-rs/canvas';
 import { config } from './config.js';
 import {
   getSetting, getWelcomePhrases, getWelcomeButtons, upsertWelcomeButton,
-  logActivity, getSettingNumber, getSettingJSON,
+  logActivity, getSettingNumber, getSettingJSON, dbClient,
 } from './database.js';
 import { getDisplayName, BLADE_COLOR } from './utils.js';
 import { T, render } from './texts.js';
@@ -19,9 +22,6 @@ const PROJECT_ROOT = path.resolve(process.cwd());
 const TEMPLATE_PATH = path.join(PROJECT_ROOT, 'assets', 'welcome.png');
 const FONT_PATH = path.join(PROJECT_ROOT, 'assets', 'ArbFONTS-RH-Zak-Bold.otf');
 
-// ============================================================
-// Custom Welcome Emoji — dynamic resolution
-// ============================================================
 const WELCOME_CUSTOM_EMOJI_ID = '1560403456966004826';
 
 let botClientRef: Client | null = null;
@@ -39,10 +39,6 @@ function getWelcomeEmojiString(): string {
   return getEmoji('welcome', '👋');
 }
 
-// ============================================================
-// Strip any {word} token that survived render() (unsupported vars)
-// Applied to welcome texts to satisfy "no unsubstituted variables" rule.
-// ============================================================
 function stripUnknownVars(text: string): string {
   return text.replace(/\{[a-zA-Z_]\w*\}/g, '');
 }
@@ -215,8 +211,8 @@ export async function generateWelcomeImage(member: GuildMember): Promise<Attachm
 function pickRandom<T>(arr: T[]): T { return arr[Math.floor(Math.random() * arr.length)]; }
 
 let lastPhrase = '';
-function pickPhrase(): string {
-  const phrases = getWelcomePhrases();
+async function pickPhrase(): Promise<string> {
+  const phrases = await getWelcomePhrases();
   const pool = phrases.length > 0 ? phrases : [...config.defaultWelcomePhrases];
   if (pool.length === 0) return 'Welcome!';
   let c: string; let i = 0;
@@ -226,14 +222,15 @@ function pickPhrase(): string {
 }
 
 // ============================================================
-// Default buttons — empty labels (icon-only)
+// Default buttons
 // ============================================================
-export function ensureDefaultButtons(): void {
-  if (getWelcomeButtons().length > 0) return;
-  upsertWelcomeButton({ button_id: 'welcome', label: '', emoji_id: null, url: null, style: 'Secondary', enabled: 1 });
-  upsertWelcomeButton({ button_id: 'rules', label: '', emoji_id: null, url: config.defaultButtonLinks.rules, style: 'Link', enabled: 1 });
-  upsertWelcomeButton({ button_id: 'roles', label: '', emoji_id: null, url: config.defaultButtonLinks.roles, style: 'Link', enabled: 1 });
-  upsertWelcomeButton({ button_id: 'community', label: '', emoji_id: null, url: config.defaultButtonLinks.community, style: 'Link', enabled: 1 });
+export async function ensureDefaultButtons(): Promise<void> {
+  const existing = await getWelcomeButtons();
+  if (existing.length > 0) return;
+  await upsertWelcomeButton({ button_id: 'welcome', label: '', emoji_id: null, url: null, style: 'Secondary', enabled: 1 });
+  await upsertWelcomeButton({ button_id: 'rules', label: '', emoji_id: null, url: config.defaultButtonLinks.rules, style: 'Link', enabled: 1 });
+  await upsertWelcomeButton({ button_id: 'roles', label: '', emoji_id: null, url: config.defaultButtonLinks.roles, style: 'Link', enabled: 1 });
+  await upsertWelcomeButton({ button_id: 'community', label: '', emoji_id: null, url: config.defaultButtonLinks.community, style: 'Link', enabled: 1 });
 }
 
 const DEFAULT_BUTTON_EMOJIS: Record<string, string> = {
@@ -243,9 +240,9 @@ const DEFAULT_BUTTON_EMOJIS: Record<string, string> = {
   community: '💬',
 };
 
-export function buildWelcomeButtons(targetMemberId: string): ActionRowBuilder<ButtonBuilder>[] {
-  ensureDefaultButtons();
-  const buttons = getWelcomeButtons();
+export async function buildWelcomeButtons(targetMemberId: string): Promise<ActionRowBuilder<ButtonBuilder>[]> {
+  await ensureDefaultButtons();
+  const buttons = await getWelcomeButtons();
   const rows: ActionRowBuilder<ButtonBuilder>[] = [];
   let row = new ActionRowBuilder<ButtonBuilder>();
 
@@ -296,7 +293,7 @@ export function buildWelcomeButtons(targetMemberId: string): ActionRowBuilder<Bu
 }
 
 // ============================================================
-// Build welcome text (title / body / footer) from registry
+// Build welcome text
 // ============================================================
 interface WelcomeVars {
   user: string;
@@ -357,7 +354,7 @@ export async function handleMemberJoin(member: GuildMember): Promise<void> {
   if (!channel) return;
   if (!isV2Available()) return;
 
-  const phrase = pickPhrase();
+  const phrase = await pickPhrase();
   const files: AttachmentBuilder[] = [];
   let imageUrl: string | undefined;
 
@@ -372,7 +369,7 @@ export async function handleMemberJoin(member: GuildMember): Promise<void> {
     }
   }
 
-  const buttons = buildWelcomeButtons(member.id);
+  const buttons = await buildWelcomeButtons(member.id);
   const welcomeEmoji = getWelcomeEmojiString();
 
   const vars = buildWelcomeVars(member, phrase, welcomeEmoji);
@@ -396,12 +393,12 @@ export async function handleMemberJoin(member: GuildMember): Promise<void> {
       files,
       allowedMentions: { users: [member.id] },
     });
-    logActivity('welcome_sent', member.id, `تم الترحيب بـ ${member.user.tag}`);
+    await logActivity('welcome_sent', member.id, `تم الترحيب بـ ${member.user.tag}`);
   } catch (e) { console.error('[Blade X] ❌ فشل إرسال رسالة الترحيب:', e); }
 }
 
 // ============================================================
-// Say Hi — deferred before slow work
+// Say Hi
 // ============================================================
 export async function handleSayHi(interaction: ButtonInteraction): Promise<void> {
   const id = interaction.customId;
@@ -430,12 +427,12 @@ export async function handleSayHi(interaction: ButtonInteraction): Promise<void>
     }
 
     const key = `greet:${interaction.user.id}:${targetId}:${interaction.message.id}`;
-    const { default: db } = await import('./database.js');
-    if (db.prepare('SELECT 1 FROM settings WHERE key = ?').get(key)) {
+    const existing = await dbClient.execute({ sql: 'SELECT 1 FROM settings WHERE key = ?', args: [key] });
+    if (existing.rows.length > 0) {
       await interaction.editReply({ content: T('welcome.sayhi.already', '') || '⚠️ رحّبت بهذا العضو بالفعل.' });
       return;
     }
-    db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, '1');
+    await dbClient.execute({ sql: 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', args: [key, '1'] });
 
     const target = await guild.members.fetch(targetId).catch(() => null);
     if (!target) {
@@ -494,7 +491,7 @@ export async function handleSayHi(interaction: ButtonInteraction): Promise<void>
     });
 
     await interaction.editReply({ content: T('welcome.sayhi.success', '') || '✅ تم إرسال ترحيبك!' });
-    logActivity('say_hi', interaction.user.id, `رحّب بـ ${targetId}`);
+    await logActivity('say_hi', interaction.user.id, `رحّب بـ ${targetId}`);
   } catch (e) {
     console.error('[Blade X] ❌ فشل Say Hi:', e);
     await interaction.editReply({ content: '❌ حدث خطأ.' }).catch(() => {});

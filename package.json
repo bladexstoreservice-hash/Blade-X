@@ -1,28 +1,31 @@
 {
   "name": "blade-x",
   "version": "1.0.0",
-  "description": "Blade X — بوت إدارة Discord احترافي وبسيط",
+  "description": "Blade X - Discord bot",
   "type": "module",
   "main": "dist/index.js",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "deploy:commands": "tsx src/index.ts --deploy-commands"
+    "deploy:commands": "tsx src/index.ts --deploy-commands",
+    "test:turso": "tsx scripts/test-turso.ts"
   },
   "dependencies": {
+    "@libsql/client": "^0.18.0",
     "@napi-rs/canvas": "^0.1.69",
-    "better-sqlite3": "^12.9.0",
+    "csrf-csrf": "^3.0.6",
     "discord.js": "^14.26.4",
     "dotenv": "^16.4.5",
     "express": "^5.0.0",
     "express-rate-limit": "^7.4.0",
     "express-session": "^1.18.0",
-    "helmet": "^8.0.0",
-    "csrf-csrf": "^3.0.6"
+    "helmet": "^8.0.0"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.11",
     "@types/express": "^5.0.0",
     "@types/express-session": "^1.18.0",
     "@types/node": "^22.0.0",

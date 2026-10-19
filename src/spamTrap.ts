@@ -1,4 +1,7 @@
-import { Client, Events, Message, TextChannel, EmbedBuilder, MessageFlags } from 'discord.js';
+// ============================================================
+// Blade X — Spam Trap (v5 — Turso)
+// ============================================================
+import { Client, Events, Message, TextChannel, EmbedBuilder } from 'discord.js';
 import { getSpamTrapConfig, logSpamTrap, logActivity } from './database.js';
 import { config } from './config.js';
 import { getEmoji } from './emojiRegistry.js';
@@ -54,8 +57,8 @@ export function registerSpamTrap(client: Client): void {
       // حذف الرسالة إن أمكن
       try { await message.delete(); } catch { /* ignore */ }
 
-      logSpamTrap(member.id, message.channelId, message.id, content, cfg.punishment, durationMs, success, error);
-      logActivity('spam_trap', member.id, `${cfg.punishment}${error ? ' (failed)' : ''}`);
+      await logSpamTrap(member.id, message.channelId, message.id, content, cfg.punishment, durationMs, success, error);
+      await logActivity('spam_trap', member.id, `${cfg.punishment}${error ? ' (failed)' : ''}`);
 
       // Log
       if (cfg.logChannelId) {

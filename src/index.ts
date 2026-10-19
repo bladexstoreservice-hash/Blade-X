@@ -3,7 +3,7 @@ import {
   MessageFlags,
 } from 'discord.js';
 import { config } from './config.js';
-import { closeDatabase } from './database.js';
+import { closeDatabase, initDatabase } from './database.js';
 import { setupCommand, handleSetup, registerSetupHandlers } from './setup.js';
 import { registerLogEvents } from './logs.js';
 import { registerModerationLogs } from './moderationLogs.js';
@@ -22,8 +22,8 @@ import { registerMediaShow } from './mediaShow.js';
 import { registerSupport, publishSupportPanel } from './support.js';
 import { componentsV2Command, handleComponentsV2 } from './componentsV2.js';
 import { seedDefaultTexts } from './texts.js';
-import { TEXT_REGISTRY, COLOR_REGISTRY } from './textRegistry.js';
-import { seedEmojiDefaults, setEmojiClient } from './emojiRegistry.js';
+import { TEXT_REGISTRY, COLOR_REGISTRY, initTextRegistry } from './textRegistry.js';
+import { seedEmojiDefaults, setEmojiClient, initEmojiRegistry } from './emojiRegistry.js';
 import { startDashboard } from './dashboard.js';
 
 const client = new Client({
@@ -90,7 +90,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
           await interaction.reply({ content: '⚠️ Components V2 غير متاح.', flags: MessageFlags.Ephemeral });
           return;
         }
-        const allowed = getSelfRoles().filter((r) => r.enabled);
+        const roles = await getSelfRoles();
+        const allowed = roles.filter((r) => r.enabled);
         if (allowed.length === 0) {
           await interaction.reply({ content: '⚠️ لا توجد رولات متاحة.', flags: MessageFlags.Ephemeral });
           return;
@@ -100,8 +101,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
         const { StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ActionRowBuilder } = discord;
         const chunks: typeof allowed[] = [];
         for (let i = 0; i < allowed.length; i += 25) chunks.push(allowed.slice(i, i + 25));
-        // ✅ FIX: actionRows type is any[] — use ActionRowBuilder<any> to avoid
-        //    "refers to a value" error from dynamic-import class used as type param.
         const actionRows: any[] = [];
         for (let i = 0; i < Math.min(chunks.length, 5); i++) {
           const chunk = chunks[i];
@@ -142,14 +141,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
           const ok = await publishRolePanel(client);
           await interaction.editReply({ content: ok ? '✅ تم النشر.' : '❌ فشل.' });
         } else if (sub === 'list') {
-          const rows = getSelfRoles();
+          const rows = await getSelfRoles();
           await interaction.editReply({
             content: rows.length === 0 ? '📋 لا توجد رولات.'
               : '📋 الرولات:\n' + rows.map(r => `• <@&${r.role_id}> — ${r.label}${r.enabled ? '' : ' (معطّل)'}`).join('\n'),
           });
         } else if (sub === 'add') {
           const role = interaction.options.getRole('role', true);
-          addSelfRole(
+          await addSelfRole(
             role.id,
             interaction.options.getString('label') ?? role.name,
             interaction.options.getString('emoji_id') ?? null,
@@ -158,10 +157,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
           await interaction.editReply({ content: `✅ تم إضافة ${role}.` });
         } else if (sub === 'remove') {
           const role = interaction.options.getRole('role', true);
-          const rows = getSelfRoles();
+          const rows = await getSelfRoles();
           const t = rows.find(r => r.role_id === role.id);
           if (!t) await interaction.editReply({ content: '❌ غير موجود.' });
-          else { removeSelfRole(t.id); await interaction.editReply({ content: `✅ تم إزالة ${role}.` }); }
+          else { await removeSelfRole(t.id); await interaction.editReply({ content: `✅ تم إزالة ${role}.` }); }
         }
         return;
       }
@@ -198,9 +197,9 @@ client.once(Events.ClientReady, async (c) => {
   startPunishmentChecker(client);
 });
 
-function shutdown(): void {
+async function shutdown(): Promise<void> {
   console.log('[Blade X] 🛑 Shutting down...');
-  closeDatabase();
+  await closeDatabase();
   client.destroy();
   process.exit(0);
 }
@@ -209,14 +208,23 @@ process.on('SIGTERM', shutdown);
 
 async function main(): Promise<void> {
   console.log('[Blade X] Starting application...');
+  await initDatabase();
+
   if (process.argv.includes('--deploy-commands')) {
     await deployCommands();
     process.exit(0);
   }
   console.log('[Blade X] Database initialized.');
 
-  seedDefaultTexts();
-  seedEmojiDefaults();
+  // Registries — order matters:
+  //   1. seedDefaultTexts → populates settings table
+  //   2. seedEmojiDefaults → populates emoji_registry
+  //   3. initTextRegistry → loads custom_texts cache + builds FULL_REGISTRY from settings
+  //   4. initEmojiRegistry → loads emoji_registry cache + replacements
+  await seedDefaultTexts();
+  await seedEmojiDefaults();
+  await initTextRegistry();
+  await initEmojiRegistry();
   console.log(`[Blade X] ✅ Text Registry loaded: ${TEXT_REGISTRY.length} texts, ${COLOR_REGISTRY.length} colors`);
 
   registerLogEvents(client);

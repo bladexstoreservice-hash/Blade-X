@@ -1,9 +1,13 @@
+// ============================================================
+// Blade X — Anti-Nuke (v5 — Turso)
+// ============================================================
 import {
   Client, Events, AuditLogEvent, Guild, TextChannel, EmbedBuilder,
   PermissionFlagsBits, User,
 } from 'discord.js';
 import { config } from './config.js';
-import db, {
+import {
+  dbClient,
   getSetting, getSettingJSON, setSettingJSON, logNukeEvent, countRecentNukeEvents,
 } from './database.js';
 import { getEmoji } from './emojiRegistry.js';
@@ -60,10 +64,10 @@ function getConfig(): NukeConfig {
   } catch { return defaultConfig; }
 }
 
-export function saveConfig(patch: Partial<NukeConfig>): void {
+export async function saveConfig(patch: Partial<NukeConfig>): Promise<void> {
   const current = getConfig();
   const merged = { ...current, ...patch, rules: { ...current.rules, ...(patch.rules ?? {}) } };
-  setSettingJSON('antinuke_config', merged);
+  await setSettingJSON('antinuke_config', merged);
 }
 
 // ===== تحديد المنفذ من Audit Log =====
@@ -112,9 +116,9 @@ async function handleNukeEvent(
   const executorId = await resolveExecutor(guild, auditAction, targetId);
   if (isTrusted(executorId, cfg, guild)) return;
 
-  const recentCount = countRecentNukeEvents(guild.id, eventType, rule.windowMs) + 1;
+  const recentCount = (await countRecentNukeEvents(guild.id, eventType, rule.windowMs)) + 1;
 
-  logNukeEvent({
+  await logNukeEvent({
     guild_id: guild.id,
     event_type: eventType,
     executor_id: executorId,
@@ -215,18 +219,6 @@ export interface AntiNukeTestReport {
   notes: string[];
 }
 
-/**
- * Simulates Anti-Nuke detection by inserting TEST-marked events into the
- * nuke_events table (never touching real Discord channels/roles), running the
- * REAL `countRecentNukeEvents` against them, and comparing to the REAL
- * thresholds. All test rows are deleted afterwards by runId.
- *
- * Safe by design:
- *   - No channels created/deleted
- *   - No roles created/deleted
- *   - No punishments applied
- *   - Test events use executor_id='TEST_BOT' and details prefix 'TEST:<runId>'
- */
 export async function runAntiNukeSimulation(
   guildId: string,
   runBy: string,
@@ -248,19 +240,21 @@ export async function runAntiNukeSimulation(
       if (!rule) continue;
 
       try {
-        const countBefore = countRecentNukeEvents(guildId, ruleName, rule.windowMs);
+        const countBefore = await countRecentNukeEvents(guildId, ruleName, rule.windowMs);
 
         for (let i = 0; i < rule.threshold; i++) {
-          db.prepare(`INSERT INTO nuke_events
-            (guild_id, event_type, executor_id, target_id, details, severity, action_taken, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-            .run(
+          await dbClient.execute({
+            sql: `INSERT INTO nuke_events
+              (guild_id, event_type, executor_id, target_id, details, severity, action_taken, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            args: [
               guildId, ruleName, 'TEST_BOT', `TEST:${runId}:${i}`,
               `TEST:${runId}`, rule.severity, 'test_event', Date.now(),
-            );
+            ],
+          });
         }
 
-        const countAfter = countRecentNukeEvents(guildId, ruleName, rule.windowMs);
+        const countAfter = await countRecentNukeEvents(guildId, ruleName, rule.windowMs);
         const wouldTrigger = countAfter >= rule.threshold;
         const actualDelta = countAfter - countBefore;
         const pass = actualDelta >= rule.threshold && wouldTrigger;
@@ -281,10 +275,12 @@ export async function runAntiNukeSimulation(
     }
   } finally {
     try {
-      const info = db.prepare("DELETE FROM nuke_events WHERE details LIKE ? AND executor_id = 'TEST_BOT'")
-        .run(`TEST:${runId}%`);
-      if (info.changes > 0) {
-        console.log(`[Blade X] ✅ Anti-Nuke test cleanup: ${info.changes} rows removed`);
+      const result = await dbClient.execute({
+        sql: "DELETE FROM nuke_events WHERE details LIKE ? AND executor_id = 'TEST_BOT'",
+        args: [`TEST:${runId}%`],
+      });
+      if (result.rowsAffected > 0) {
+        console.log(`[Blade X] ✅ Anti-Nuke test cleanup: ${result.rowsAffected} rows removed`);
       }
     } catch (e) {
       errors.push(`cleanup: ${(e as Error)?.message ?? 'unknown'}`);
@@ -309,14 +305,16 @@ export async function runAntiNukeSimulation(
   }
 
   try {
-    db.prepare(`INSERT INTO nuke_events
-      (guild_id, event_type, executor_id, target_id, details, severity, action_taken, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(
+    await dbClient.execute({
+      sql: `INSERT INTO nuke_events
+        (guild_id, event_type, executor_id, target_id, details, severity, action_taken, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
         guildId, 'antinuke_test', runBy, null,
         `TEST_REPORT:${runId} passed=${passed}/${results.length}`,
         'low', 'test_completed', Date.now(),
-      );
+      ],
+    });
   } catch { /* ignore */ }
 
   return {

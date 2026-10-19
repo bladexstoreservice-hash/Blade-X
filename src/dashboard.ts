@@ -54,55 +54,100 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-class SQLiteSessionStore extends session.Store {
-  private stmt = (() => {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS sessions (
-        sid TEXT PRIMARY KEY,
-        sess TEXT NOT NULL,
-        expired INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_sessions_expired ON sessions(expired);
-    `);
-    return {
-      get: db.prepare('SELECT sess FROM sessions WHERE sid = ? AND expired > ?'),
-      set: db.prepare('INSERT OR REPLACE INTO sessions (sid, sess, expired) VALUES (?, ?, ?)'),
-      destroy: db.prepare('DELETE FROM sessions WHERE sid = ?'),
-      touch: db.prepare('UPDATE sessions SET expired = ? WHERE sid = ?'),
-      cleanup: db.prepare('DELETE FROM sessions WHERE expired < ?'),
-    };
-  })();
+// ============================================================
+// Turso Session Store — Lazy Init
+// ============================================================
+// ⚠️ التهيئة تؤجَّل حتى أول عملية فعلية (get/set/destroy/touch)
+// لأن dashboard.ts يُحمَّل قبل أن يكتمل initDatabase() في index.ts.
+// ============================================================
+class TursoSessionStore extends session.Store {
+  private initialized = false;
+  private initPromise: Promise<void> | null = null;
+
+  private ensureReady(): Promise<void> {
+    if (this.initialized) return Promise.resolve();
+    if (this.initPromise) return this.initPromise;
+    this.initPromise = (async () => {
+      try {
+        await db.executeMultiple(`
+          CREATE TABLE IF NOT EXISTS sessions (
+            sid TEXT PRIMARY KEY,
+            sess TEXT NOT NULL,
+            expired INTEGER NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS idx_sessions_expired ON sessions(expired);
+        `);
+        this.initialized = true;
+      } catch (e) {
+        console.error('[Blade X] ❌ Session store init failed (will retry):', e);
+        this.initPromise = null;
+        throw e;
+      }
+    })();
+    return this.initPromise;
+  }
 
   constructor() {
     super();
-    setInterval(() => this.stmt.cleanup.run(Date.now()), 60 * 60 * 1000);
+    // Lazy cleanup — يتجاهل بصمت إن لم تُهيَّأ القاعدة بعد
+    setInterval(() => {
+      void (async () => {
+        if (!this.initialized) return;
+        try {
+          await db.execute({ sql: 'DELETE FROM sessions WHERE expired < ?', args: [Date.now()] });
+        } catch (e) {
+          console.error('[Blade X] ❌ Session cleanup failed:', e);
+        }
+      })();
+    }, 60 * 60 * 1000);
   }
+
   get(sid: string, cb: (err: any, session?: any) => void): void {
-    try {
-      const row = this.stmt.get.get(sid, Date.now()) as { sess: string } | undefined;
-      cb(null, row ? JSON.parse(row.sess) : null);
-    } catch (e) { cb(e); }
+    void (async () => {
+      try {
+        await this.ensureReady();
+        const r = await db.execute({ sql: 'SELECT sess FROM sessions WHERE sid = ? AND expired > ?', args: [sid, Date.now()] });
+        const row = r.rows[0];
+        if (!row) { cb(null, null); return; }
+        cb(null, JSON.parse(String(row.sess)));
+      } catch (e) { cb(e); }
+    })();
   }
-  set(sid: string, session: any, cb?: (err?: any) => void): void {
-    try {
-      const expired = session.cookie?.expires
-        ? new Date(session.cookie.expires).getTime()
-        : Date.now() + 30 * 86_400_000;
-      this.stmt.set.run(sid, JSON.stringify(session), expired);
-      cb?.();
-    } catch (e) { cb?.(e); }
+
+  set(sid: string, sessionData: any, cb?: (err?: any) => void): void {
+    void (async () => {
+      try {
+        await this.ensureReady();
+        const expired = sessionData.cookie?.expires
+          ? new Date(sessionData.cookie.expires).getTime()
+          : Date.now() + 30 * 86_400_000;
+        await db.execute({ sql: 'INSERT OR REPLACE INTO sessions (sid, sess, expired) VALUES (?, ?, ?)', args: [sid, JSON.stringify(sessionData), expired] });
+        cb?.();
+      } catch (e) { cb?.(e); }
+    })();
   }
+
   destroy(sid: string, cb?: (err?: any) => void): void {
-    try { this.stmt.destroy.run(sid); cb?.(); } catch (e) { cb?.(e); }
+    void (async () => {
+      try {
+        await this.ensureReady();
+        await db.execute({ sql: 'DELETE FROM sessions WHERE sid = ?', args: [sid] });
+        cb?.();
+      } catch (e) { cb?.(e); }
+    })();
   }
-  touch(sid: string, session: any, cb?: () => void): void {
-    try {
-      const expired = session.cookie?.expires
-        ? new Date(session.cookie.expires).getTime()
-        : Date.now() + 30 * 86_400_000;
-      this.stmt.touch.run(expired, sid);
-      cb?.();
-    } catch { cb?.(); }
+
+  touch(sid: string, sessionData: any, cb?: () => void): void {
+    void (async () => {
+      try {
+        await this.ensureReady();
+        const expired = sessionData.cookie?.expires
+          ? new Date(sessionData.cookie.expires).getTime()
+          : Date.now() + 30 * 86_400_000;
+        await db.execute({ sql: 'UPDATE sessions SET expired = ? WHERE sid = ?', args: [expired, sid] });
+        cb?.();
+      } catch { cb?.(); }
+    })();
   }
 }
 
@@ -113,7 +158,7 @@ app.use(
     secret: config.dashboard.sessionSecret,
     resave: false,
     saveUninitialized: false,
-    store: new SQLiteSessionStore(),
+    store: new TursoSessionStore(),
     rolling: true,
     cookie: {
       httpOnly: true,
@@ -136,9 +181,7 @@ const REGISTRY_CACHE_MS = 5_000;
 
 function getRegistryPayloadCached(): any {
   const now = Date.now();
-  if (registryCache && now < registryCache.expiresAt) {
-    return registryCache.payload;
-  }
+  if (registryCache && now < registryCache.expiresAt) return registryCache.payload;
   const texts = listAllTexts();
   const categories = listCategories();
   const colors = listAllColors();
@@ -148,9 +191,7 @@ function getRegistryPayloadCached(): any {
   return payload;
 }
 
-function invalidateRegistryCache(): void {
-  registryCache = null;
-}
+function invalidateRegistryCache(): void { registryCache = null; }
 
 // ============================================================
 // Diagnostics
@@ -161,22 +202,15 @@ app.get('/api/diag/texts', (req: Request, res: Response) => {
     console.log(`[Blade X] 🔍 DIAG /api/diag/texts → ${payload.texts.length} texts, ${payload.colors.length} colors`);
     res.json({
       ok: true,
-      counts: {
-        texts: payload.texts.length,
-        categories: payload.categories.length,
-        colors: payload.colors.length,
-      },
+      counts: { texts: payload.texts.length, categories: payload.categories.length, colors: payload.colors.length },
       diagnostics: payload.diagnostics,
       firstFiveTexts: payload.texts.slice(0, 5).map((t: any) => ({ key: t.key, defaultValue: t.defaultValue })),
       firstThreeColors: payload.colors.slice(0, 3).map((c: any) => ({ key: c.key, currentValue: c.currentValue })),
-      session: {
-        hasUser: !!(req.session as any)?.user,
-        username: (req.session as any)?.user?.username ?? null,
-      },
+      session: { hasUser: !!(req.session as any)?.user, username: (req.session as any)?.user?.username ?? null },
     });
   } catch (e: any) {
     console.error('[Blade X] ❌ DIAG /api/diag/texts:', e);
-    res.status(500).json({ ok: false, error: e?.message ?? 'unknown', stack: String(e?.stack ?? '').slice(0, 1000) });
+    res.status(500).json({ ok: false, error: e?.message ?? 'unknown' });
   }
 });
 
@@ -279,26 +313,41 @@ app.get('/api/settings', requireAuth, (_req: Request, res: Response) => { res.js
 app.get('/api/settings/:key', requireAuth, (req: Request, res: Response) => {
   res.json({ key: String(req.params.key), value: getSetting(String(req.params.key)) });
 });
-app.post('/api/settings/:key', requireAuth, (req: Request, res: Response) => {
+app.post('/api/settings/:key', requireAuth, async (req: Request, res: Response) => {
   const key = String(req.params.key);
   const { value } = req.body as { value?: unknown };
   if (typeof value !== 'string') { res.status(400).json({ error: 'value must be string' }); return; }
-  setSetting(key, value);
-  res.json({ ok: true });
+  try { await setSetting(key, value); res.json({ ok: true }); }
+  catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-app.post('/api/settings', requireAuth, (req: Request, res: Response) => {
+app.post('/api/settings', requireAuth, async (req: Request, res: Response) => {
   const { values } = req.body as { values?: Record<string, string> };
   if (!values || typeof values !== 'object') { res.status(400).json({ error: 'values object required' }); return; }
   let count = 0;
-  for (const [k, v] of Object.entries(values)) { if (typeof v === 'string') { setSetting(k, v); count++; } }
-  res.json({ ok: true, count });
+  try {
+    for (const [k, v] of Object.entries(values)) { if (typeof v === 'string') { await setSetting(k, v); count++; } }
+    res.json({ ok: true, count });
+  } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed', count }); }
 });
 
 // ===== Stats =====
-app.get('/api/stats', requireAuth, (_req: Request, res: Response) => {
+app.get('/api/stats', requireAuth, async (_req: Request, res: Response) => {
   try {
     const client = (globalThis as any).__bladeClient;
     const guild = client?.guilds?.cache?.get(config.guildId);
+    const [phrases, selfRoles, buttons, mediaChannels, recentActivity, activeSession] = await Promise.all([
+      getWelcomePhrases(),
+      getSelfRoles(),
+      getWelcomeButtons(),
+      getMediaChannels(),
+      getRecentActivity(15),
+      getActiveMovieSession(),
+    ]);
+    let activeMovie: any = null;
+    if (activeSession) {
+      const st = await getMovieStats(activeSession.id);
+      activeMovie = { id: activeSession.id, movie: activeSession.movie_name, status: activeSession.status, startedAt: activeSession.started_at, ratings: st.count, average: st.average };
+    }
     res.json({
       botOnline: !!client?.isReady?.(),
       guildName: guild?.name ?? null,
@@ -308,17 +357,12 @@ app.get('/api/stats', requireAuth, (_req: Request, res: Response) => {
       roleCount: guild?.roles?.cache?.size ?? null,
       welcomeEnabled: getSetting('welcome_enabled') !== 'false',
       welcomeChannel: getSetting('welcome_channel_id'),
-      phrasesCount: getWelcomePhrases().length,
-      selfRolesCount: getSelfRoles().length,
-      buttonsCount: getWelcomeButtons().length,
-      mediaChannelsCount: getMediaChannels().length,
-      recentActivity: getRecentActivity(15),
-      activeMovie: (() => {
-        const s = getActiveMovieSession();
-        if (!s) return null;
-        const st = getMovieStats(s.id);
-        return { id: s.id, movie: s.movie_name, status: s.status, startedAt: s.started_at, ratings: st.count, average: st.average };
-      })(),
+      phrasesCount: phrases.length,
+      selfRolesCount: selfRoles.length,
+      buttonsCount: buttons.length,
+      mediaChannelsCount: mediaChannels.length,
+      recentActivity,
+      activeMovie,
     });
   } catch (e: any) {
     console.error('[Blade X] ❌ /api/stats:', e);
@@ -349,55 +393,56 @@ app.get('/api/server-stats', requireAuth, async (_req: Request, res: Response) =
     const uptimeM = Math.floor((uptimeMs % 3_600_000) / 60_000);
     res.json({
       available: true,
-      guild: {
-        name: guild.name, id: guild.id, icon: guild.iconURL({ size: 128 }),
-        ownerId: guild.ownerId, created: guild.createdTimestamp,
-        botJoined: guild.members.me?.joinedTimestamp ?? null,
-        boosts: guild.premiumSubscriptionCount ?? 0, boostTier: guild.premiumTier,
-        preferredLocale: guild.preferredLocale,
-      },
-      counts: {
-        members: guild.memberCount, humans, bots, inVoice,
-        channels: channels.size, textChannels, voiceChannels, categories, threads,
-        roles: guild.roles.cache.size, emojis: guild.emojis.cache.size, stickers: guild.stickers.cache.size,
-      },
+      guild: { name: guild.name, id: guild.id, icon: guild.iconURL({ size: 128 }), ownerId: guild.ownerId, created: guild.createdTimestamp, botJoined: guild.members.me?.joinedTimestamp ?? null, boosts: guild.premiumSubscriptionCount ?? 0, boostTier: guild.premiumTier, preferredLocale: guild.preferredLocale },
+      counts: { members: guild.memberCount, humans, bots, inVoice, channels: channels.size, textChannels, voiceChannels, categories, threads, roles: guild.roles.cache.size, emojis: guild.emojis.cache.size, stickers: guild.stickers.cache.size },
       bot: { online: client.isReady(), uptimeMs, uptimeText: `${uptimeH}h ${uptimeM}m`, ping: client.ws.ping },
     });
   } catch (e) { console.error('[Blade X] ❌ server-stats:', e); res.status(500).json({ available: false, reason: 'Failed' }); }
 });
 
 // ===== Activity / Moderation =====
-app.get('/api/activity', requireAuth, (_req: Request, res: Response) => { res.json(getRecentActivity(150)); });
-app.get('/api/moderation', requireAuth, (_req: Request, res: Response) => { res.json(getModerationLog(150)); });
+app.get('/api/activity', requireAuth, async (_req: Request, res: Response) => {
+  try { res.json(await getRecentActivity(150)); } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
+});
+app.get('/api/moderation', requireAuth, async (_req: Request, res: Response) => {
+  try { res.json(await getModerationLog(150)); } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
+});
 
 // ===== Welcome =====
-app.get('/api/welcome/phrases', requireAuth, (_req: Request, res: Response) => { res.json(getWelcomePhrasesDetailed()); });
-app.post('/api/welcome/phrases', requireAuth, (req: Request, res: Response) => {
+app.get('/api/welcome/phrases', requireAuth, async (_req: Request, res: Response) => {
+  try { res.json(await getWelcomePhrasesDetailed()); } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
+});
+app.post('/api/welcome/phrases', requireAuth, async (req: Request, res: Response) => {
   const { text } = req.body as { text?: string };
   if (!text || typeof text !== 'string') { res.status(400).json({ error: 'text required' }); return; }
-  addWelcomePhrase(text.slice(0, 500));
-  res.json({ ok: true });
+  try { await addWelcomePhrase(text.slice(0, 500)); res.json({ ok: true }); }
+  catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-app.delete('/api/welcome/phrases/:id', requireAuth, (req: Request, res: Response) => {
-  deleteWelcomePhrase(Number(req.params.id));
-  res.json({ ok: true });
+app.delete('/api/welcome/phrases/:id', requireAuth, async (req: Request, res: Response) => {
+  try { await deleteWelcomePhrase(Number(req.params.id)); res.json({ ok: true }); }
+  catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
 
-app.get('/api/welcome/buttons', requireAuth, (_req: Request, res: Response) => { res.json(getWelcomeButtons()); });
-app.post('/api/welcome/buttons/:id', requireAuth, (req: Request, res: Response) => {
+app.get('/api/welcome/buttons', requireAuth, async (_req: Request, res: Response) => {
+  try { res.json(await getWelcomeButtons()); } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
+});
+app.post('/api/welcome/buttons/:id', requireAuth, async (req: Request, res: Response) => {
   const id = String(req.params.id);
   const body = req.body as Partial<{ label: string; emoji_id: string | null; url: string | null; style: string; enabled: number }>;
-  const current = getWelcomeButtons().find((b) => b.button_id === id);
-  if (!current) { res.status(404).json({ error: 'button not found' }); return; }
-  upsertWelcomeButton({
-    button_id: id,
-    label: body.label ?? current.label,
-    emoji_id: body.emoji_id !== undefined ? body.emoji_id : current.emoji_id,
-    url: body.url !== undefined ? body.url : current.url,
-    style: body.style ?? current.style,
-    enabled: body.enabled ?? current.enabled,
-  });
-  res.json({ ok: true });
+  try {
+    const buttons = await getWelcomeButtons();
+    const current = buttons.find((b) => b.button_id === id);
+    if (!current) { res.status(404).json({ error: 'button not found' }); return; }
+    await upsertWelcomeButton({
+      button_id: id,
+      label: body.label ?? current.label,
+      emoji_id: body.emoji_id !== undefined ? body.emoji_id : current.emoji_id,
+      url: body.url !== undefined ? body.url : current.url,
+      style: body.style ?? current.style,
+      enabled: body.enabled ?? current.enabled,
+    });
+    res.json({ ok: true });
+  } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
 
 app.get('/api/welcome/preview', requireAuth, async (_req: Request, res: Response) => {
@@ -418,48 +463,47 @@ app.get('/api/welcome/preview', requireAuth, async (_req: Request, res: Response
 });
 
 // ===== Self Roles =====
-app.get('/api/selfroles', requireAuth, (_req: Request, res: Response) => { res.json(getSelfRoles()); });
-app.post('/api/selfroles', requireAuth, (req: Request, res: Response) => {
+app.get('/api/selfroles', requireAuth, async (_req: Request, res: Response) => {
+  try { res.json(await getSelfRoles()); } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
+});
+app.post('/api/selfroles', requireAuth, async (req: Request, res: Response) => {
   const { role_id, label, emoji_id, description } = req.body as { role_id?: string; label?: string; emoji_id?: string | null; description?: string | null };
   if (!role_id || !label) { res.status(400).json({ error: 'role_id and label required' }); return; }
-  addSelfRole(role_id, label, emoji_id ?? null, description ?? null);
-  res.json({ ok: true });
+  try { await addSelfRole(role_id, label, emoji_id ?? null, description ?? null); res.json({ ok: true }); }
+  catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-app.put('/api/selfroles/:id', requireAuth, (req: Request, res: Response) => {
+app.put('/api/selfroles/:id', requireAuth, async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   const patch = req.body as Partial<{ role_id: string; label: string; emoji_id: string | null; description: string | null; sort_order: number; enabled: number }>;
-  const result = updateSelfRoleFull(id, patch as any);
-  if (!result.ok) { res.status(400).json({ error: result.error }); return; }
-  res.json({ ok: true, row: result.row });
+  try {
+    const result = await updateSelfRoleFull(id, patch as any);
+    if (!result.ok) { res.status(400).json({ error: result.error }); return; }
+    res.json({ ok: true, row: result.row });
+  } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-app.delete('/api/selfroles/:id', requireAuth, (req: Request, res: Response) => {
-  removeSelfRole(Number(req.params.id));
-  res.json({ ok: true });
+app.delete('/api/selfroles/:id', requireAuth, async (req: Request, res: Response) => {
+  try { await removeSelfRole(Number(req.params.id)); res.json({ ok: true }); }
+  catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-
-app.post('/api/selfroles/reorder', requireAuth, (req: Request, res: Response) => {
+app.post('/api/selfroles/reorder', requireAuth, async (req: Request, res: Response) => {
   const { order } = req.body as { order?: { id: number; sort_order: number }[] };
   if (!Array.isArray(order)) { res.status(400).json({ error: 'order array required' }); return; }
   let count = 0;
-  for (const item of order) {
-    if (typeof item.id !== 'number' || typeof item.sort_order !== 'number') continue;
-    if (!Number.isFinite(item.id) || !Number.isFinite(item.sort_order)) continue;
-    updateSelfRole(item.id, { sort_order: item.sort_order });
-    count++;
-  }
-  res.json({ ok: true, count });
+  try {
+    for (const item of order) {
+      if (typeof item.id !== 'number' || typeof item.sort_order !== 'number') continue;
+      if (!Number.isFinite(item.id) || !Number.isFinite(item.sort_order)) continue;
+      await updateSelfRole(item.id, { sort_order: item.sort_order });
+      count++;
+    }
+    res.json({ ok: true, count });
+  } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed', count }); }
 });
-
 app.post('/api/selfroles/publish', requireAuth, async (_req: Request, res: Response) => {
   const client = (globalThis as any).__bladeClient;
   if (!client) { res.status(500).json({ error: 'client not ready' }); return; }
-  try {
-    const ok = await publishRolePanel(client);
-    res.json({ ok });
-  } catch (e: any) {
-    console.error('[Blade X] ❌ publishRolePanel:', e);
-    res.status(500).json({ ok: false, error: e?.message ?? 'failed' });
-  }
+  try { const ok = await publishRolePanel(client); res.json({ ok }); }
+  catch (e: any) { console.error('[Blade X] ❌ publishRolePanel:', e); res.status(500).json({ ok: false, error: e?.message ?? 'failed' }); }
 });
 
 // ============================================================
@@ -473,116 +517,116 @@ app.get('/api/texts/registry', requireAuth, (_req: Request, res: Response) => {
       console.log(`[Blade X] ✅ /api/texts/registry → ${payload.texts.length} texts, ${payload.categories.length} categories, ${payload.colors.length} colors`);
     }
     res.json(payload);
-  } catch (e: any) {
-    console.error('[Blade X] ❌ /api/texts/registry:', e);
-    res.status(500).json({ error: e?.message ?? 'failed', ok: false });
-  }
+  } catch (e: any) { console.error('[Blade X] ❌ /api/texts/registry:', e); res.status(500).json({ error: e?.message ?? 'failed', ok: false }); }
 });
-
-app.post('/api/texts/registry/save', requireAuth, (req: Request, res: Response) => {
+app.post('/api/texts/registry/save', requireAuth, async (req: Request, res: Response) => {
   const { key, value } = req.body as { key?: string; value?: string };
   if (!key || typeof value !== 'string') { res.status(400).json({ error: 'key and value required' }); return; }
   const user = (req.session as any)?.user?.username ?? 'dashboard';
-  const result = setText(key, value, user);
-  if (!result.ok) { res.status(400).json({ error: result.error }); return; }
-  invalidateRegistryCache();
-  res.json({ ok: true });
+  try {
+    const result = await setText(key, value, user);
+    if (!result.ok) { res.status(400).json({ error: result.error }); return; }
+    invalidateRegistryCache();
+    res.json({ ok: true });
+  } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-
-app.post('/api/texts/registry/reset', requireAuth, (req: Request, res: Response) => {
+app.post('/api/texts/registry/reset', requireAuth, async (req: Request, res: Response) => {
   const { key } = req.body as { key?: string };
   if (!key) { res.status(400).json({ error: 'key required' }); return; }
-  resetText(key);
-  invalidateRegistryCache();
-  res.json({ ok: true });
+  try { await resetText(key); invalidateRegistryCache(); res.json({ ok: true }); }
+  catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-
-app.post('/api/texts/registry/color', requireAuth, (req: Request, res: Response) => {
+app.post('/api/texts/registry/color', requireAuth, async (req: Request, res: Response) => {
   const { key, value } = req.body as { key?: string; value?: string };
   if (!key || typeof value !== 'string') { res.status(400).json({ error: 'key and value required' }); return; }
   const user = (req.session as any)?.user?.username ?? 'dashboard';
-  const result = setColor(key, value, user);
-  if (!result.ok) { res.status(400).json({ error: result.error }); return; }
-  invalidateRegistryCache();
-  res.json({ ok: true });
+  try {
+    const result = await setColor(key, value, user);
+    if (!result.ok) { res.status(400).json({ error: result.error }); return; }
+    invalidateRegistryCache();
+    res.json({ ok: true });
+  } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-
-app.post('/api/texts/registry/color/reset', requireAuth, (req: Request, res: Response) => {
+app.post('/api/texts/registry/color/reset', requireAuth, async (req: Request, res: Response) => {
   const { key } = req.body as { key?: string };
   if (!key) { res.status(400).json({ error: 'key required' }); return; }
-  resetColor(key);
-  invalidateRegistryCache();
-  res.json({ ok: true });
+  try { await resetColor(key); invalidateRegistryCache(); res.json({ ok: true }); }
+  catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-
-app.get('/api/texts', requireAuth, (_req: Request, res: Response) => {
-  res.json(getAllSettings());
-});
-
-app.post('/api/texts', requireAuth, (req: Request, res: Response) => {
+app.get('/api/texts', requireAuth, (_req: Request, res: Response) => { res.json(getAllSettings()); });
+app.post('/api/texts', requireAuth, async (req: Request, res: Response) => {
   const { values } = req.body as { values?: Record<string, string> };
   if (!values || typeof values !== 'object') { res.status(400).json({ error: 'values object required' }); return; }
   let count = 0;
-  for (const [k, v] of Object.entries(values)) { if (typeof v === 'string') { setSetting(k, v); count++; } }
-  res.json({ ok: true, count });
+  try {
+    for (const [k, v] of Object.entries(values)) { if (typeof v === 'string') { await setSetting(k, v); count++; } }
+    res.json({ ok: true, count });
+  } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed', count }); }
 });
-
 app.get('/api/texts/:prefix', requireAuth, (req: Request, res: Response) => {
   const prefix = String(req.params.prefix);
   const RESERVED = new Set(['registry', 'save', 'reset', 'color']);
-  if (RESERVED.has(prefix)) {
-    res.status(404).json({ error: 'Not found' });
-    return;
-  }
+  if (RESERVED.has(prefix)) { res.status(404).json({ error: 'Not found' }); return; }
   res.json(getTextsByPrefix(prefix));
 });
-
-app.post('/api/settings/reset', requireAuth, (req: Request, res: Response) => {
+app.post('/api/settings/reset', requireAuth, async (req: Request, res: Response) => {
   const { keys } = req.body as { keys?: string[] };
   if (!Array.isArray(keys)) { res.status(400).json({ error: 'keys array required' }); return; }
   let count = 0;
-  for (const k of keys) {
-    const def = (config.defaultTexts as Record<string, string>)[k];
-    if (def !== undefined) { setSetting(k, def); count++; }
-  }
-  res.json({ ok: true, count });
+  try {
+    for (const k of keys) {
+      const def = (config.defaultTexts as Record<string, string>)[k];
+      if (def !== undefined) { await setSetting(k, def); count++; }
+    }
+    res.json({ ok: true, count });
+  } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed', count }); }
 });
 
 // ===== Movie Night =====
-app.get('/api/movie/status', requireAuth, (_req: Request, res: Response) => {
-  const active = getActiveMovieSession();
-  if (!active) { res.json({ active: null, recent: getRecentMovieSessions(15) }); return; }
-  res.json({
-    active: {
-      ...active,
-      stats: getMovieStats(active.id),
-      recipientsCount: getMovieRecipients(active.id).length,
-      recipients: getMovieRecipients(active.id),
-      ratings: getAllMovieRatings(active.id),
-    },
-    recent: getRecentMovieSessions(15),
-  });
+app.get('/api/movie/status', requireAuth, async (_req: Request, res: Response) => {
+  try {
+    const active = await getActiveMovieSession();
+    const recent = await getRecentMovieSessions(15);
+    if (!active) { res.json({ active: null, recent }); return; }
+    const [stats, recipients, ratings] = await Promise.all([
+      getMovieStats(active.id),
+      getMovieRecipients(active.id),
+      getAllMovieRatings(active.id),
+    ]);
+    res.json({ active: { ...active, stats, recipientsCount: recipients.length, recipients, ratings }, recent });
+  } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-app.get('/api/movie/session/:id', requireAuth, (req: Request, res: Response) => {
-  const s = getMovieSession(Number(req.params.id));
-  if (!s) { res.status(404).json({ error: 'not found' }); return; }
-  res.json({ ...s, stats: getMovieStats(s.id), recipients: getMovieRecipients(s.id), ratings: getAllMovieRatings(s.id) });
+app.get('/api/movie/session/:id', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const s = await getMovieSession(Number(req.params.id));
+    if (!s) { res.status(404).json({ error: 'not found' }); return; }
+    const [stats, recipients, ratings] = await Promise.all([
+      getMovieStats(s.id),
+      getMovieRecipients(s.id),
+      getAllMovieRatings(s.id),
+    ]);
+    res.json({ ...s, stats, recipients, ratings });
+  } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
 app.post('/api/movie/start', requireAuth, async (req: Request, res: Response) => {
   const { movie } = req.body as { movie?: string };
   if (!movie || typeof movie !== 'string') { res.status(400).json({ error: 'movie required' }); return; }
   const client = (globalThis as any).__bladeClient;
   if (!client) { res.status(500).json({ error: 'client not available' }); return; }
-  const { startMovieSession } = await import('./movieNight.js');
-  const result = await startMovieSession(client, movie.trim(), 'dashboard');
-  res.json(result);
+  try {
+    const { startMovieSession } = await import('./movieNight.js');
+    const result = await startMovieSession(client, movie.trim(), 'dashboard');
+    res.json(result);
+  } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
 app.post('/api/movie/close', requireAuth, async (_req: Request, res: Response) => {
-  const active = getActiveMovieSession();
-  if (!active) { res.status(404).json({ error: 'no active session' }); return; }
-  const { closeMovieSession } = await import('./movieNight.js');
-  await closeMovieSession(active.id);
-  res.json({ ok: true });
+  try {
+    const active = await getActiveMovieSession();
+    if (!active) { res.status(404).json({ error: 'no active session' }); return; }
+    const { closeMovieSession } = await import('./movieNight.js');
+    await closeMovieSession(active.id);
+    res.json({ ok: true });
+  } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
 
 // ===== Discord data =====
@@ -605,116 +649,92 @@ app.get('/api/discord/roles', requireAuth, (_req: Request, res: Response) => {
 });
 
 // ===== Emoji Manager =====
-app.get('/api/emojis', requireAuth, (_req: Request, res: Response) => {
-  res.json(getAllEmojisResolved());
+app.get('/api/emojis', requireAuth, (_req: Request, res: Response) => { res.json(getAllEmojisResolved()); });
+app.get('/api/emojis/defaults', requireAuth, (_req: Request, res: Response) => { res.json(DEFAULT_EMOJIS); });
+app.get('/api/emojis/scan', requireAuth, async (req: Request, res: Response) => {
+  try { const force = req.query.force === '1'; const report = await runEmojiScan(force); res.json(report); }
+  catch (e: any) { res.status(500).json({ error: e?.message ?? 'scan failed' }); }
 });
-app.get('/api/emojis/defaults', requireAuth, (_req: Request, res: Response) => {
-  res.json(DEFAULT_EMOJIS);
+app.post('/api/emojis/scan/refresh', requireAuth, async (_req: Request, res: Response) => {
+  try { invalidateScanCache(); const report = await runEmojiScan(true); res.json(report); }
+  catch (e: any) { res.status(500).json({ error: e?.message ?? 'scan failed' }); }
 });
-app.get('/api/emojis/scan', requireAuth, (req: Request, res: Response) => {
-  try {
-    const force = req.query.force === '1';
-    const report = runEmojiScan(force);
-    res.json(report);
-  } catch (e: any) {
-    console.error('[Blade X] ❌ emoji scan:', e);
-    res.status(500).json({ error: e?.message ?? 'scan failed' });
-  }
+app.get('/api/emojis/replacements', requireAuth, async (_req: Request, res: Response) => {
+  try { res.json(await listReplacements()); } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-app.post('/api/emojis/scan/refresh', requireAuth, (_req: Request, res: Response) => {
-  try {
-    invalidateScanCache();
-    const report = runEmojiScan(true);
-    res.json(report);
-  } catch (e: any) {
-    console.error('[Blade X] ❌ emoji scan refresh:', e);
-    res.status(500).json({ error: e?.message ?? 'scan failed' });
-  }
-});
-app.get('/api/emojis/replacements', requireAuth, (_req: Request, res: Response) => {
-  try { res.json(listReplacements()); }
-  catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
-});
-app.post('/api/emojis/replacements', requireAuth, (req: Request, res: Response) => {
-  const { original, replacement, scope, createdBy } = req.body as {
-    original?: string; replacement?: string; scope?: string; createdBy?: string;
-  };
+app.post('/api/emojis/replacements', requireAuth, async (req: Request, res: Response) => {
+  const { original, replacement, scope, createdBy } = req.body as { original?: string; replacement?: string; scope?: string; createdBy?: string };
   if (!original || !replacement) { res.status(400).json({ error: 'original and replacement required' }); return; }
   const check = validateEmojiInput(replacement);
   if (!check.valid) { res.status(400).json({ error: check.reason ?? 'Invalid replacement emoji' }); return; }
   try {
-    const id = upsertReplacement({
-      original: original.trim(),
-      replacement: replacement.trim(),
-      scope: (scope ?? 'global').trim(),
-      enabled: 1,
-      createdBy: createdBy ?? (req.session as any)?.user?.username,
-    });
+    const id = await upsertReplacement({ original: original.trim(), replacement: replacement.trim(), scope: (scope ?? 'global').trim(), enabled: 1, createdBy: createdBy ?? (req.session as any)?.user?.username });
     res.json({ ok: true, id, resolved: resolveStoredEmojiValue(replacement) || replacement });
-  } catch (e: any) {
-    console.error('[Blade X] ❌ upsert replacement:', e);
-    res.status(500).json({ error: e?.message ?? 'failed' });
-  }
+  } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-app.delete('/api/emojis/replacements/:id', requireAuth, (req: Request, res: Response) => {
-  try { deleteReplacement(Number(req.params.id)); res.json({ ok: true }); }
+app.delete('/api/emojis/replacements/:id', requireAuth, async (req: Request, res: Response) => {
+  try { await deleteReplacement(Number(req.params.id)); res.json({ ok: true }); }
   catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-app.post('/api/emojis/replacements/:id/toggle', requireAuth, (req: Request, res: Response) => {
+app.post('/api/emojis/replacements/:id/toggle', requireAuth, async (req: Request, res: Response) => {
   const { enabled } = req.body as { enabled?: boolean };
-  try { toggleReplacement(Number(req.params.id), !!enabled); res.json({ ok: true }); }
+  try { await toggleReplacement(Number(req.params.id), !!enabled); res.json({ ok: true }); }
   catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-app.post('/api/emojis/:key', requireAuth, (req: Request, res: Response) => {
+app.post('/api/emojis/:key', requireAuth, async (req: Request, res: Response) => {
   const key = String(req.params.key);
   const { value } = req.body as { value?: string };
   if (typeof value !== 'string' || !value.trim()) { res.status(400).json({ error: 'value required' }); return; }
   const trimmed = value.trim();
   const check = validateEmojiInput(trimmed);
   if (!check.valid) { res.status(400).json({ error: check.reason ?? 'Invalid emoji format' }); return; }
-  setEmoji(key, trimmed);
-  res.json({ ok: true, resolved: resolveStoredEmojiValue(trimmed) });
+  try { await setEmoji(key, trimmed); res.json({ ok: true, resolved: resolveStoredEmojiValue(trimmed) }); }
+  catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-app.post('/api/emojis/:key/reset', requireAuth, (req: Request, res: Response) => {
+app.post('/api/emojis/:key/reset', requireAuth, async (req: Request, res: Response) => {
   const key = String(req.params.key);
-  resetEmoji(key);
-  res.json({ ok: true, row: getEmojiRow(key) });
+  try { await resetEmoji(key); res.json({ ok: true, row: getEmojiRow(key) }); }
+  catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-app.post('/api/emojis/reset-all', requireAuth, (_req: Request, res: Response) => {
-  resetAllEmojis();
-  res.json({ ok: true });
+app.post('/api/emojis/reset-all', requireAuth, async (_req: Request, res: Response) => {
+  try { await resetAllEmojis(); res.json({ ok: true }); }
+  catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-app.post('/api/emojis/seed', requireAuth, (_req: Request, res: Response) => {
-  seedEmojiDefaults();
-  res.json({ ok: true });
+app.post('/api/emojis/seed', requireAuth, async (_req: Request, res: Response) => {
+  try { await seedEmojiDefaults(); res.json({ ok: true }); }
+  catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
 
 // ===== Message Builder =====
-app.get('/api/builder/drafts', requireAuth, (_req: Request, res: Response) => { res.json(mbGetDrafts()); });
-app.get('/api/builder/drafts/:id', requireAuth, (req: Request, res: Response) => {
-  const row = mbGetDraft(Number(req.params.id));
-  if (!row) { res.status(404).json({ error: 'not found' }); return; }
-  res.json({ ...row, payload: JSON.parse(row.payload) });
+app.get('/api/builder/drafts', requireAuth, async (_req: Request, res: Response) => {
+  try { res.json(await mbGetDrafts()); } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-app.post('/api/builder/drafts', requireAuth, (req: Request, res: Response) => {
+app.get('/api/builder/drafts/:id', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const row = await mbGetDraft(Number(req.params.id));
+    if (!row) { res.status(404).json({ error: 'not found' }); return; }
+    res.json({ ...row, payload: JSON.parse(row.payload) });
+  } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
+});
+app.post('/api/builder/drafts', requireAuth, async (req: Request, res: Response) => {
   const { name, payload } = req.body as { name?: string; payload?: BuilderPayload };
   if (!name || !payload) { res.status(400).json({ error: 'name and payload required' }); return; }
   const err = validatePayload(payload);
   if (err) { res.status(400).json({ error: err }); return; }
-  const id = mbSaveDraft(name, payload, (req.session as any).user.id);
-  res.json({ ok: true, id });
+  try { const id = await mbSaveDraft(name, payload, (req.session as any).user.id); res.json({ ok: true, id }); }
+  catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-app.put('/api/builder/drafts/:id', requireAuth, (req: Request, res: Response) => {
+app.put('/api/builder/drafts/:id', requireAuth, async (req: Request, res: Response) => {
   const { name, payload } = req.body as { name?: string; payload?: BuilderPayload };
   if (!name || !payload) { res.status(400).json({ error: 'name and payload required' }); return; }
   const err = validatePayload(payload);
   if (err) { res.status(400).json({ error: err }); return; }
-  mbUpdateDraft(Number(req.params.id), name, payload);
-  res.json({ ok: true });
+  try { await mbUpdateDraft(Number(req.params.id), name, payload); res.json({ ok: true }); }
+  catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-app.delete('/api/builder/drafts/:id', requireAuth, (req: Request, res: Response) => {
-  mbDeleteDraft(Number(req.params.id));
-  res.json({ ok: true });
+app.delete('/api/builder/drafts/:id', requireAuth, async (req: Request, res: Response) => {
+  try { await mbDeleteDraft(Number(req.params.id)); res.json({ ok: true }); }
+  catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
 app.post('/api/builder/validate', requireAuth, (req: Request, res: Response) => {
   const { payload } = req.body as { payload?: BuilderPayload };
@@ -727,85 +747,68 @@ app.post('/api/builder/send', requireAuth, async (req: Request, res: Response) =
   if (!channelId || !payload) { res.status(400).json({ error: 'channelId and payload required' }); return; }
   const client = (globalThis as any).__bladeClient;
   if (!client) { res.status(500).json({ error: 'client not available' }); return; }
-  const result = await sendViaBot(client, channelId, payload);
-  if (result.ok) mbLogSend(result.channelId, result.messageId, payload, (req.session as any).user.id);
-  res.json(result);
+  try {
+    const result = await sendViaBot(client, channelId, payload);
+    if (result.ok) await mbLogSend(result.channelId, result.messageId, payload, (req.session as any).user.id);
+    res.json(result);
+  } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-app.get('/api/builder/history', requireAuth, (_req: Request, res: Response) => { res.json(mbGetHistory(50)); });
+app.get('/api/builder/history', requireAuth, async (_req: Request, res: Response) => {
+  try { res.json(await mbGetHistory(50)); } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
+});
 
 // ===== Spam Trap =====
 app.get('/api/spamtrap', requireAuth, (_req: Request, res: Response) => { res.json(getSpamTrapConfig()); });
-app.post('/api/spamtrap', requireAuth, (req: Request, res: Response) => {
-  setSpamTrapConfig(req.body as Partial<ReturnType<typeof getSpamTrapConfig>>);
-  res.json({ ok: true, config: getSpamTrapConfig() });
+app.post('/api/spamtrap', requireAuth, async (req: Request, res: Response) => {
+  try { await setSpamTrapConfig(req.body as Partial<ReturnType<typeof getSpamTrapConfig>>); res.json({ ok: true, config: getSpamTrapConfig() }); }
+  catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-app.get('/api/spamtrap/log', requireAuth, (_req: Request, res: Response) => { res.json(getSpamTrapLog(100)); });
+app.get('/api/spamtrap/log', requireAuth, async (_req: Request, res: Response) => {
+  try { res.json(await getSpamTrapLog(100)); } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
+});
 
 // ===== Media Show =====
 app.get('/api/media/defaults', requireAuth, (_req: Request, res: Response) => {
   res.json({
-    title_format: '{user}',
-    author_emoji: '',
-    color: '#f59e0b',
-    footer_from_label: 'Pumpkins from',
-    footer_others_label: 'and {n} others',
-    reaction_emoji: '🎃',
-    comment_emoji: '💬',
-    delete_emoji: '🗑️',
-    viewall_emoji: '👥',
-    share_emoji: '📤',
-    share_title: 'مشاركة المنشور',
-    share_hint: 'اختر المستلمين ثم اضغط تأكيد.',
-    share_note: 'سيتم إرسال المنشور إلى المستلمين المحددين عبر رسالة خاصة.',
-    share_select_placeholder: 'اختر مستلمًا أو أكثر...',
-    share_confirm_label: 'تأكيد الإرسال',
-    share_cancel_label: 'إلغاء',
-    share_title_emoji: '📤',
-    share_confirm_emoji: '✅',
-    share_cancel_emoji: '❌',
-    share_color: '#f59e0b',
-    share_dm_title: '📤 تمت مشاركة منشور معك',
-    share_success_msg: '✅ تم الإرسال',
-    share_partial_msg: '⚠️ تعذّر إرسال رسالة خاصة إلى بعض المستلمين',
-    share_none_msg: '⚠️ لم تختر مستلمين',
-    button_open_post_emoji: '🎃',
-    viewall_prev_label: '',
-    viewall_prev_emoji: '◀️',
-    viewall_next_label: '',
-    viewall_next_emoji: '▶️',
-    button_view_all_label: 'View All',
-    button_open_post_label: 'افتح المنشور',
-    thread_auto_create: 0,
-    thread_name_format: 'Comments · {user}',
-    allow_admin_edit: 1,
-    allow_admin_delete: 1,
-    ignore_bots: 1,
+    title_format: '{user}', author_emoji: '', color: '#f59e0b', footer_from_label: 'Pumpkins from', footer_others_label: 'and {n} others',
+    reaction_emoji: '🎃', comment_emoji: '💬', delete_emoji: '🗑️', viewall_emoji: '👥', share_emoji: '📤',
+    share_title: 'مشاركة المنشور', share_hint: 'اختر المستلمين ثم اضغط تأكيد.', share_note: 'سيتم إرسال المنشور إلى المستلمين المحددين عبر رسالة خاصة.',
+    share_select_placeholder: 'اختر مستلمًا أو أكثر...', share_confirm_label: 'تأكيد الإرسال', share_cancel_label: 'إلغاء',
+    share_title_emoji: '📤', share_confirm_emoji: '✅', share_cancel_emoji: '❌', share_color: '#f59e0b',
+    share_dm_title: '📤 تمت مشاركة منشور معك', share_success_msg: '✅ تم الإرسال', share_partial_msg: '⚠️ تعذّر إرسال رسالة خاصة إلى بعض المستلمين',
+    share_none_msg: '⚠️ لم تختر مستلمين', button_open_post_emoji: '🎃', viewall_prev_label: '', viewall_prev_emoji: '◀️',
+    viewall_next_label: '', viewall_next_emoji: '▶️', button_view_all_label: 'View All', button_open_post_label: 'افتح المنشور',
+    thread_auto_create: 0, thread_name_format: 'Comments · {user}', allow_admin_edit: 1, allow_admin_delete: 1, ignore_bots: 1,
   });
 });
-app.get('/api/media/channels', requireAuth, (_req: Request, res: Response) => { res.json(getMediaChannels()); });
-app.post('/api/media/channels', requireAuth, (req: Request, res: Response) => {
+app.get('/api/media/channels', requireAuth, async (_req: Request, res: Response) => {
+  try { res.json(await getMediaChannels()); } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
+});
+app.post('/api/media/channels', requireAuth, async (req: Request, res: Response) => {
   const { channelId } = req.body as { channelId?: string };
   if (!channelId || !/^\d{17,20}$/.test(channelId)) { res.status(400).json({ error: 'channelId required' }); return; }
-  addMediaChannel(channelId);
-  res.json({ ok: true, channel: getMediaChannel(channelId) });
+  try { await addMediaChannel(channelId); res.json({ ok: true, channel: await getMediaChannel(channelId) }); }
+  catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-app.put('/api/media/channels/:id', requireAuth, (req: Request, res: Response) => {
+app.put('/api/media/channels/:id', requireAuth, async (req: Request, res: Response) => {
   const id = String(req.params.id);
-  updateMediaChannel(id, req.body);
-  invalidateMediaEmojiCache();
-  res.json({ ok: true, channel: getMediaChannel(id) });
+  try { await updateMediaChannel(id, req.body); invalidateMediaEmojiCache(); res.json({ ok: true, channel: await getMediaChannel(id) }); }
+  catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-app.delete('/api/media/channels/:id', requireAuth, (req: Request, res: Response) => {
-  removeMediaChannel(String(req.params.id));
-  res.json({ ok: true });
+app.delete('/api/media/channels/:id', requireAuth, async (req: Request, res: Response) => {
+  try { await removeMediaChannel(String(req.params.id)); res.json({ ok: true }); }
+  catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-app.get('/api/media/posts/:authorId', requireAuth, (req: Request, res: Response) => {
-  res.json(getUserMediaPosts(String(req.params.authorId), 100));
+app.get('/api/media/posts/:authorId', requireAuth, async (req: Request, res: Response) => {
+  try { res.json(await getUserMediaPosts(String(req.params.authorId), 100)); }
+  catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-app.get('/api/media/post/:id', requireAuth, (req: Request, res: Response) => {
-  const post = getMediaPostById(Number(req.params.id));
-  if (!post) { res.status(404).json({ error: 'not found' }); return; }
-  res.json(post);
+app.get('/api/media/post/:id', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const post = await getMediaPostById(Number(req.params.id));
+    if (!post) { res.status(404).json({ error: 'not found' }); return; }
+    res.json(post);
+  } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
 
 // Archive channel status
@@ -821,27 +824,16 @@ app.get('/api/media/archive', requireAuth, async (_req: Request, res: Response) 
     if (!ch.isTextBased?.() || ch.isDMBased?.()) { res.json({ channelId, valid: false, reason: 'Not a text channel' }); return; }
     const me = guild.members.me;
     const perms = me ? ch.permissionsFor(me) : null;
-    const permissions = {
-      viewChannel: perms?.has('ViewChannel') ?? false,
-      sendMessages: perms?.has('SendMessages') ?? false,
-      attachFiles: perms?.has('AttachFiles') ?? false,
-      readMessageHistory: perms?.has('ReadMessageHistory') ?? false,
-    };
+    const permissions = { viewChannel: perms?.has('ViewChannel') ?? false, sendMessages: perms?.has('SendMessages') ?? false, attachFiles: perms?.has('AttachFiles') ?? false, readMessageHistory: perms?.has('ReadMessageHistory') ?? false };
     const valid = Object.values(permissions).every(Boolean);
     res.json({ channelId, valid, permissions, channelName: ch.name });
-  } catch (e: any) {
-    res.status(500).json({ valid: false, reason: e?.message ?? 'unknown' });
-  }
+  } catch (e: any) { res.status(500).json({ valid: false, reason: e?.message ?? 'unknown' }); }
 });
 
 app.post('/api/media/archive', requireAuth, async (req: Request, res: Response) => {
   try {
     const { channelId } = req.body as { channelId?: string | null };
-    if (channelId === null || channelId === undefined || channelId === '') {
-      setSetting('media_archive_channel_id', '');
-      res.json({ ok: true, channelId: null });
-      return;
-    }
+    if (channelId === null || channelId === undefined || channelId === '') { await setSetting('media_archive_channel_id', ''); res.json({ ok: true, channelId: null }); return; }
     if (!/^\d{17,20}$/.test(channelId)) { res.status(400).json({ error: 'Invalid channel id' }); return; }
     const client = (globalThis as any).__bladeClient;
     const guild = client?.guilds?.cache?.get(config.guildId);
@@ -857,121 +849,109 @@ app.post('/api/media/archive', requireAuth, async (req: Request, res: Response) 
     if (!perms?.has('AttachFiles')) missing.push('AttachFiles');
     if (!perms?.has('ReadMessageHistory')) missing.push('ReadMessageHistory');
     if (missing.length > 0) { res.status(400).json({ error: `Bot lacks permissions: ${missing.join(', ')}` }); return; }
-    setSetting('media_archive_channel_id', channelId);
+    await setSetting('media_archive_channel_id', channelId);
     res.json({ ok: true, channelId });
-  } catch (e: any) {
-    res.status(500).json({ ok: false, error: e?.message ?? 'unknown' });
-  }
+  } catch (e: any) { res.status(500).json({ ok: false, error: e?.message ?? 'unknown' }); }
 });
 
-app.get('/api/media/storage', requireAuth, (_req: Request, res: Response) => {
+app.get('/api/media/storage', requireAuth, async (_req: Request, res: Response) => {
   try {
     const disk = getStorageUsage();
+    const [totalSize, diskFiles, archivedFiles, totalFiles, totalPosts] = await Promise.all([
+      getTotalMediaFilesSize(),
+      countDiskMedia(),
+      countArchivedMedia(),
+      countMediaFiles(),
+      countMediaPosts(),
+    ]);
     res.json({
       ok: true,
       disk: {
-        bytes: getTotalMediaFilesSize(),
-        files: countDiskMedia(),
+        bytes: totalSize,
+        files: diskFiles,
         posts: disk.postCount,
         actualBytes: disk.totalBytes,
         actualFiles: disk.fileCount,
       },
-      archive: { files: countArchivedMedia() },
-      total: { dbFiles: countMediaFiles(), posts: countMediaPosts() },
+      archive: { files: archivedFiles },
+      total: { dbFiles: totalFiles, posts: totalPosts },
     });
-  } catch (e: any) {
-    res.status(500).json({ ok: false, error: e?.message ?? 'failed' });
-  }
+  } catch (e: any) { res.status(500).json({ ok: false, error: e?.message ?? 'failed' }); }
 });
 
 // ===== Support =====
 app.get('/api/support/settings', requireAuth, (_req: Request, res: Response) => {
   const keys = [
-    'support_enabled', 'support_panel_channel', 'support_ticket_category',
-    'support_suggestions_channel', 'support_transcript_channel', 'support_admin_role',
-    'support_max_open_per_user', 'support_title', 'support_description',
-    'support_color', 'support_select_placeholder', 'support_select_placeholder_emoji',
+    'support_enabled', 'support_panel_channel', 'support_ticket_category', 'support_suggestions_channel', 'support_transcript_channel', 'support_admin_role',
+    'support_max_open_per_user', 'support_title', 'support_description', 'support_color', 'support_select_placeholder', 'support_select_placeholder_emoji',
     'support_option_support_label', 'support_option_support_desc', 'support_option_support_emoji',
     'support_option_suggestion_label', 'support_option_suggestion_desc', 'support_option_suggestion_emoji',
-    'support_ticket_title', 'support_ticket_close_label', 'support_ticket_close_emoji',
-    'support_ticket_dm_title', 'support_ticket_dm_desc',
-    'support_suggestion_title', 'support_suggestion_approved', 'support_suggestion_rejected',
-    'support_transcript_title',
+    'support_ticket_title', 'support_ticket_close_label', 'support_ticket_close_emoji', 'support_ticket_dm_title', 'support_ticket_dm_desc',
+    'support_suggestion_title', 'support_suggestion_approved', 'support_suggestion_rejected', 'support_transcript_title',
   ];
   const out: Record<string, string | null> = {};
   for (const k of keys) out[k] = getSetting(k);
   res.json(out);
 });
-app.get('/api/support/tickets', requireAuth, (_req: Request, res: Response) => {
-  res.json(listTickets(config.guildId, 200));
+app.get('/api/support/tickets', requireAuth, async (_req: Request, res: Response) => {
+  try { res.json(await listTickets(config.guildId, 200)); } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-app.get('/api/support/suggestions', requireAuth, (_req: Request, res: Response) => {
-  const list = listSuggestions(config.guildId, 200);
-  res.json(list.map(s => ({ ...s, votes: getSuggestionVotes(s.id) })));
+app.get('/api/support/suggestions', requireAuth, async (_req: Request, res: Response) => {
+  try {
+    const list = await listSuggestions(config.guildId, 200);
+    const withVotes = await Promise.all(list.map(async (s) => ({ ...s, votes: await getSuggestionVotes(s.id) })));
+    res.json(withVotes);
+  } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
 app.post('/api/support/publish', requireAuth, async (_req: Request, res: Response) => {
   const client = (globalThis as any).__bladeClient;
   if (!client) { res.status(500).json({ error: 'client not ready' }); return; }
-  const { publishSupportPanel } = await import('./support.js');
-  const result = await publishSupportPanel(client);
-  res.json(result);
+  try { const { publishSupportPanel } = await import('./support.js'); const result = await publishSupportPanel(client); res.json(result); }
+  catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
 
 // ===== Moderation Events / Anti-Nuke =====
-app.get('/api/moderation/events', requireAuth, (_req: Request, res: Response) => {
-  res.json(getModerationEvents(config.guildId, 200));
+app.get('/api/moderation/events', requireAuth, async (_req: Request, res: Response) => {
+  try { res.json(await getModerationEvents(config.guildId, 200)); } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
 app.get('/api/antinuke/config', requireAuth, (_req: Request, res: Response) => {
   const raw = getSetting('antinuke_config');
   try { res.json(raw ? JSON.parse(raw) : {}); } catch { res.json({}); }
 });
-app.post('/api/antinuke/config', requireAuth, (req: Request, res: Response) => {
-  try { saveNukeConfig(req.body); res.json({ ok: true }); }
+app.post('/api/antinuke/config', requireAuth, async (req: Request, res: Response) => {
+  try { await saveNukeConfig(req.body); res.json({ ok: true }); }
   catch (e: any) { res.status(400).json({ error: e?.message ?? 'invalid' }); }
 });
-app.get('/api/antinuke/events', requireAuth, (_req: Request, res: Response) => {
-  res.json(getNukeEvents(config.guildId, 200));
+app.get('/api/antinuke/events', requireAuth, async (_req: Request, res: Response) => {
+  try { res.json(await getNukeEvents(config.guildId, 200)); } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
 
-// Anti-Nuke test
 let antiNukeTestRunning = false;
-
 app.post('/api/antinuke/test', requireAuth, async (req: Request, res: Response) => {
-  if (antiNukeTestRunning) {
-    res.status(429).json({ ok: false, error: 'اختبار Anti-Nuke قيد التشغيل بالفعل. انتظر انتهاءه.' });
-    return;
-  }
+  if (antiNukeTestRunning) { res.status(429).json({ ok: false, error: 'اختبار Anti-Nuke قيد التشغيل بالفعل. انتظر انتهاءه.' }); return; }
   const client = (globalThis as any).__bladeClient;
-  if (!client || !client.isReady?.()) {
-    res.status(500).json({ ok: false, error: 'البوت غير جاهز' });
-    return;
-  }
+  if (!client || !client.isReady?.()) { res.status(500).json({ ok: false, error: 'البوت غير جاهز' }); return; }
   const guild = client.guilds.cache.get(config.guildId);
-  if (!guild) {
-    res.status(500).json({ ok: false, error: 'السيرفر غير موجود' });
-    return;
-  }
+  if (!guild) { res.status(500).json({ ok: false, error: 'السيرفر غير موجود' }); return; }
   antiNukeTestRunning = true;
   try {
     const user = (req.session as any)?.user?.username ?? 'dashboard';
     const report = await runAntiNukeSimulation(config.guildId, user);
     res.json({ ok: true, report });
-  } catch (e: any) {
-    console.error('[Blade X] ❌ Anti-Nuke test:', e);
-    res.status(500).json({ ok: false, error: e?.message ?? 'unknown' });
-  } finally {
-    antiNukeTestRunning = false;
-  }
+  } catch (e: any) { console.error('[Blade X] ❌ Anti-Nuke test:', e); res.status(500).json({ ok: false, error: e?.message ?? 'unknown' }); }
+  finally { antiNukeTestRunning = false; }
 });
 
 // ===== Spam Sessions =====
-app.get('/api/spam/sessions', requireAuth, (_req: Request, res: Response) => {
-  res.json(listSpamSessions(config.guildId, 100));
+app.get('/api/spam/sessions', requireAuth, async (_req: Request, res: Response) => {
+  try { res.json(await listSpamSessions(config.guildId, 100)); } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
-app.get('/api/spam/session/:id', requireAuth, (req: Request, res: Response) => {
-  const s = getSpamSession(Number(req.params.id));
-  if (!s) { res.status(404).json({ error: 'not found' }); return; }
-  res.json({ ...s, messages: getSpamSessionMessages(s.id) });
+app.get('/api/spam/session/:id', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const s = await getSpamSession(Number(req.params.id));
+    if (!s) { res.status(404).json({ error: 'not found' }); return; }
+    res.json({ ...s, messages: await getSpamSessionMessages(s.id) });
+  } catch (e: any) { res.status(500).json({ error: e?.message ?? 'failed' }); }
 });
 
 // ============================================================

@@ -1,3 +1,6 @@
+// ============================================================
+// Blade X — Self Roles (v5 — Turso)
+// ============================================================
 import {
   Client, Events, Interaction, ButtonInteraction, StringSelectMenuInteraction,
   ActionRowBuilder, ButtonBuilder, ButtonStyle,
@@ -18,7 +21,7 @@ import path from 'node:path';
 const ROLE_IMAGE_PATH = path.resolve('assets', 'roleasign.png');
 
 // ============================================================
-// Panel config (unchanged)
+// Panel config
 // ============================================================
 export interface SelfRolesPanelConfig {
   title: string;
@@ -49,13 +52,13 @@ export function buildSelfRolesPanelConfig(): SelfRolesPanelConfig {
 }
 
 // ============================================================
-// Row update (unchanged)
+// Row updates (async)
 // ============================================================
-export function updateSelfRoleFull(
+export async function updateSelfRoleFull(
   id: number,
   patch: Partial<Pick<SelfRoleRow, 'role_id' | 'label' | 'emoji_id' | 'description' | 'sort_order' | 'enabled'>>,
-): { ok: boolean; error?: string; row?: SelfRoleRow } {
-  const current = getSelfRoleById(id);
+): Promise<{ ok: boolean; error?: string; row?: SelfRoleRow }> {
+  const current = await getSelfRoleById(id);
   if (!current) return { ok: false, error: 'الرول غير موجود' };
 
   const normalized: Partial<SelfRoleRow> = { ...patch };
@@ -63,22 +66,23 @@ export function updateSelfRoleFull(
   if (patch.description === null) normalized.description = '';
 
   if (patch.role_id !== undefined && patch.role_id !== current.role_id) {
-    const conflict = getSelfRoles().find((r) => r.role_id === patch.role_id && r.id !== id);
+    const all = await getSelfRoles();
+    const conflict = all.find((r) => r.role_id === patch.role_id && r.id !== id);
     if (conflict) return { ok: false, error: 'هذا الرول مسجل بالفعل في لوحة أخرى' };
     if (!/^\d{17,20}$/.test(patch.role_id)) return { ok: false, error: 'role_id غير صالح' };
   }
 
-  updateSelfRole(id, normalized);
-  return { ok: true, row: getSelfRoleById(id) };
+  await updateSelfRole(id, normalized);
+  return { ok: true, row: await getSelfRoleById(id) };
 }
 
-export function reorderSelfRoles(order: { id: number; sort_order: number }[]): { ok: boolean; count: number } {
+export async function reorderSelfRoles(order: { id: number; sort_order: number }[]): Promise<{ ok: boolean; count: number }> {
   let count = 0;
-  const all = new Set(getSelfRoles().map((r) => r.id));
+  const all = new Set((await getSelfRoles()).map((r) => r.id));
   for (const item of order) {
     if (!all.has(item.id)) continue;
     if (typeof item.sort_order !== 'number' || !Number.isFinite(item.sort_order)) continue;
-    updateSelfRole(item.id, { sort_order: item.sort_order });
+    await updateSelfRole(item.id, { sort_order: item.sort_order });
     count++;
   }
   return { ok: true, count };
@@ -96,7 +100,6 @@ function buildSelectMenuOptions(roles: SelfRoleRow[], ownedRoleIds: Set<string> 
       .setLabel(r.label.slice(0, 100))
       .setValue(r.role_id);
 
-    // Emoji
     if (r.emoji_id) {
       try { opt.setEmoji({ id: r.emoji_id }); }
       catch { /* fallback to unicode from label */ }
@@ -105,7 +108,6 @@ function buildSelectMenuOptions(roles: SelfRoleRow[], ownedRoleIds: Set<string> 
       if (um) opt.setEmoji(um[0]);
     }
 
-    // Description: use custom description if set, otherwise ownership hint (only for personal panel)
     if (r.description && r.description.trim()) {
       opt.setDescription(r.description.slice(0, 100));
     } else if (ownedRoleIds) {
@@ -162,7 +164,7 @@ function buildRoleButton(r: SelfRoleRow, own: boolean | null): ButtonBuilder {
 }
 
 // ============================================================
-// Publish panel (now with selects)
+// Publish panel
 // ============================================================
 export async function publishRolePanel(client: Client): Promise<boolean> {
   const guild = client.guilds.cache.get(config.guildId);
@@ -174,14 +176,13 @@ export async function publishRolePanel(client: Client): Promise<boolean> {
   const channel = guild.channels.cache.get(channelId) as TextChannel | undefined;
   if (!channel) { console.error('[Blade X] ❌ قناة الرولات غير موجودة'); return false; }
 
-  const roles = getSelfRoles().filter((r) => r.enabled);
+  const allRoles = await getSelfRoles();
+  const roles = allRoles.filter((r) => r.enabled);
   if (roles.length === 0) { console.warn('[Blade X] ⚠️ لا توجد رولات'); return false; }
 
   if (!isV2Available()) { console.error('[Blade X] ❌ Components V2 غير متاح'); return false; }
 
   const panelCfg = buildSelfRolesPanelConfig();
-
-  // ✅ Select menus instead of buttons
   const actionRows = buildRoleSelectMenus(roles, null);
 
   const files: AttachmentBuilder[] = [];
@@ -211,7 +212,7 @@ export async function publishRolePanel(client: Client): Promise<boolean> {
     }
     const payload = buildV2Payload(container);
     const msg = await channel.send({ ...(payload as any), files });
-    setSetting('self_roles_message_id', msg.id);
+    await setSetting('self_roles_message_id', msg.id);
     console.log('[Blade X] ✅ تم نشر لوحة الرولات (Select Menu)');
     return true;
   } catch (e) {
@@ -231,7 +232,8 @@ async function buildPersonalPanel(interaction: any): Promise<void> {
     await interaction.reply({ content: getText('selfroles.error.generic'), flags: MessageFlags.Ephemeral });
     return;
   }
-  const allowed = getSelfRoles().filter(r => r.enabled);
+  const allRoles = await getSelfRoles();
+  const allowed = allRoles.filter(r => r.enabled);
   if (allowed.length === 0) {
     await interaction.reply({ content: getText('selfroles.empty.no_roles'), flags: MessageFlags.Ephemeral });
     return;
@@ -276,7 +278,6 @@ async function handleSelect(interaction: StringSelectMenuInteraction): Promise<v
     return;
   }
 
-  // Defer immediately to avoid Unknown interaction
   try {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   } catch (e) {
@@ -284,7 +285,8 @@ async function handleSelect(interaction: StringSelectMenuInteraction): Promise<v
     return;
   }
 
-  const allowed = getSelfRoles().filter(r => r.enabled);
+  const allRoles = await getSelfRoles();
+  const allowed = allRoles.filter(r => r.enabled);
   const allowedMap = new Map(allowed.map(r => [r.role_id, r]));
 
   let member;
@@ -312,11 +314,11 @@ async function handleSelect(interaction: StringSelectMenuInteraction): Promise<v
       if (member.roles.cache.has(roleId)) {
         await member.roles.remove(roleId, 'Self Roles');
         removed.push(role.name);
-        logActivity('self_role_remove', interaction.user.id, role.name);
+        await logActivity('self_role_remove', interaction.user.id, role.name);
       } else {
         await member.roles.add(roleId, 'Self Roles');
         added.push(role.name);
-        logActivity('self_role_add', interaction.user.id, role.name);
+        await logActivity('self_role_add', interaction.user.id, role.name);
       }
     } catch (e) {
       console.error('[Blade X] selfroles toggle error:', e);
@@ -347,7 +349,8 @@ async function handleToggle(interaction: ButtonInteraction, roleId: string): Pro
   const guild = interaction.guild;
   if (!guild) return;
 
-  const allowed = getSelfRoles().find(r => r.role_id === roleId && r.enabled);
+  const allRoles = await getSelfRoles();
+  const allowed = allRoles.find(r => r.role_id === roleId && r.enabled);
   if (!allowed) {
     await interaction.reply({ content: getText('selfroles.error.not_allowed'), flags: MessageFlags.Ephemeral });
     return;
@@ -367,10 +370,10 @@ async function handleToggle(interaction: ButtonInteraction, roleId: string): Pro
     const owns = member.roles.cache.has(roleId);
     if (owns) {
       await member.roles.remove(roleId, 'Self Roles');
-      logActivity('self_role_remove', interaction.user.id, role.name);
+      await logActivity('self_role_remove', interaction.user.id, role.name);
     } else {
       await member.roles.add(roleId, 'Self Roles');
-      logActivity('self_role_add', interaction.user.id, role.name);
+      await logActivity('self_role_add', interaction.user.id, role.name);
     }
     const isEphemeral = interaction.message.flags.has(MessageFlags.Ephemeral);
     if (isEphemeral) {
@@ -396,7 +399,6 @@ export function registerSelfRoles(client: Client): void {
 
   client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     try {
-      // ✅ NEW: Select menu handler
       if (interaction.isStringSelectMenu()) {
         if (interaction.customId === 'sr:select' || interaction.customId.startsWith('sr:select:')) {
           await handleSelect(interaction);
@@ -404,7 +406,6 @@ export function registerSelfRoles(client: Client): void {
         }
       }
 
-      // Legacy button handler (backward compat for old panels)
       if (!interaction.isButton()) return;
       const id = interaction.customId;
       if (id === 'sr:open') {
@@ -425,7 +426,7 @@ export function registerSelfRoles(client: Client): void {
 }
 
 // ============================================================
-// Slash command definitions (unchanged)
+// Slash command definitions
 // ============================================================
 export const rolePanelCommand = {
   name: 'role-panel',

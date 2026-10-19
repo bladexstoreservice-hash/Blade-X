@@ -1,31 +1,9 @@
-import db from './database.js';
+// ============================================================
+// Blade X — Emoji Registry (v5 — Turso)
+// ============================================================
+import { dbClient } from './database.js';
 import { config } from './config.js';
 import type { Client } from 'discord.js';
-
-// ===== تهيئة الجداول =====
-db.exec(`
-  CREATE TABLE IF NOT EXISTS emoji_registry (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL,
-    default_value TEXT NOT NULL,
-    description TEXT,
-    updated_at INTEGER NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS emoji_replacements (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    original TEXT NOT NULL,
-    replacement TEXT NOT NULL,
-    scope TEXT NOT NULL DEFAULT 'global',
-    enabled INTEGER NOT NULL DEFAULT 1,
-    created_by TEXT,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    UNIQUE(original, scope)
-  );
-  CREATE INDEX IF NOT EXISTS idx_emoji_repl_original ON emoji_replacements(original);
-  CREATE INDEX IF NOT EXISTS idx_emoji_repl_enabled ON emoji_replacements(enabled);
-`);
 
 // ============================================================
 // Client ref for Custom Emoji ID resolution
@@ -74,22 +52,9 @@ export const DEFAULT_EMOJIS: EmojiDefault[] = [
   { key: 'voice_move', value: '🔀', description: 'تنقل بين الرومات' },
 ];
 
-export function seedEmojiDefaults(): void {
-  const now = Date.now();
-  const insert = db.prepare(`
-    INSERT INTO emoji_registry (key, value, default_value, description, updated_at)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(key) DO UPDATE SET
-      default_value = excluded.default_value,
-      description = excluded.description
-  `);
-  const tx = db.transaction(() => {
-    for (const e of DEFAULT_EMOJIS) insert.run(e.key, e.value, e.value, e.description, now);
-  });
-  tx();
-  console.log(`[Blade X] ✅ Seeded ${DEFAULT_EMOJIS.length} emojis in registry`);
-}
-
+// ============================================================
+// Caches (loaded via initEmojiRegistry)
+// ============================================================
 interface EmojiRow {
   key: string;
   value: string;
@@ -98,8 +63,97 @@ interface EmojiRow {
   updated_at: number;
 }
 
+interface ReplacementRow {
+  id: number;
+  original: string;
+  replacement: string;
+  scope: string;
+  enabled: number;
+  created_by: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+let emojisCache: Map<string, EmojiRow> | null = null;
+let replacementsCache: ReplacementRow[] | null = null;
+let warnedNotInit = false;
+
+function warnNotInit(): void {
+  if (!warnedNotInit) {
+    console.warn('[Blade X] ⚠️ EmojiRegistry not initialized — call initEmojiRegistry() after initDatabase()');
+    warnedNotInit = true;
+  }
+}
+
 // ============================================================
-// Core resolver: raw value → Discord-ready format
+// Init
+// ============================================================
+export async function initEmojiRegistry(): Promise<void> {
+  // 1. Create emoji_replacements table (idempotent)
+  await dbClient.executeMultiple(`
+    CREATE TABLE IF NOT EXISTS emoji_replacements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      original TEXT NOT NULL,
+      replacement TEXT NOT NULL,
+      scope TEXT NOT NULL DEFAULT 'global',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_by TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE(original, scope)
+    );
+    CREATE INDEX IF NOT EXISTS idx_emoji_repl_original ON emoji_replacements(original);
+    CREATE INDEX IF NOT EXISTS idx_emoji_repl_enabled ON emoji_replacements(enabled);
+  `);
+
+  // 2. Load emojis cache
+  const emojiRows = await dbClient.execute('SELECT key, value, default_value, description, updated_at FROM emoji_registry');
+  emojisCache = new Map();
+  for (const row of emojiRows.rows) {
+    emojisCache.set(String(row.key), {
+      key: String(row.key),
+      value: String(row.value ?? ''),
+      default_value: String(row.default_value ?? ''),
+      description: row.description != null ? String(row.description) : null,
+      updated_at: Number(row.updated_at ?? 0),
+    });
+  }
+
+  // 3. Load replacements cache
+  const reps = await dbClient.execute('SELECT * FROM emoji_replacements WHERE enabled = 1');
+  replacementsCache = reps.rows.map((r) => ({
+    id: Number(r.id),
+    original: String(r.original),
+    replacement: String(r.replacement),
+    scope: String(r.scope),
+    enabled: Number(r.enabled),
+    created_by: r.created_by != null ? String(r.created_by) : null,
+    created_at: Number(r.created_at),
+    updated_at: Number(r.updated_at),
+  }));
+
+  console.log(`[Blade X] ✅ Emoji Registry loaded: ${emojisCache.size} emojis, ${replacementsCache.length} replacements`);
+}
+
+// ============================================================
+// Seed defaults (call once after initDatabase, before initEmojiRegistry)
+// ============================================================
+export async function seedEmojiDefaults(): Promise<void> {
+  const now = Date.now();
+  const stmts = DEFAULT_EMOJIS.map((e) => ({
+    sql: `INSERT INTO emoji_registry (key, value, default_value, description, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET
+        default_value = excluded.default_value,
+        description = excluded.description`,
+    args: [e.key, e.value, e.value, e.description, now],
+  }));
+  await dbClient.batch(stmts, 'write');
+  console.log(`[Blade X] ✅ Seeded ${DEFAULT_EMOJIS.length} emojis in registry`);
+}
+
+// ============================================================
+// Core resolver
 // ============================================================
 export function resolveStoredEmojiValue(raw: string): string {
   if (!raw) return '';
@@ -119,57 +173,16 @@ export function resolveStoredEmojiValue(raw: string): string {
     return '';
   }
 
-  // Unicode / plain text — as-is
   return trimmed;
 }
 
 // ============================================================
-// Replacement Map (cached)
+// Replacement application (sync — reads from cache)
 // ============================================================
-interface ReplacementRow {
-  id: number;
-  original: string;
-  replacement: string;
-  scope: string;
-  enabled: number;
-  created_by: string | null;
-  created_at: number;
-  updated_at: number;
-}
-
-let replacementsCache: ReplacementRow[] | null = null;
-let replacementsCacheTime = 0;
-const REPLACEMENTS_CACHE_MS = 30_000;
-
-function loadReplacements(): ReplacementRow[] {
-  const now = Date.now();
-  if (replacementsCache && now - replacementsCacheTime < REPLACEMENTS_CACHE_MS) {
-    return replacementsCache;
-  }
-  try {
-    replacementsCache = db
-      .prepare('SELECT * FROM emoji_replacements WHERE enabled = 1')
-      .all() as ReplacementRow[];
-    replacementsCacheTime = now;
-    return replacementsCache;
-  } catch {
-    replacementsCache = [];
-    replacementsCacheTime = now;
-    return [];
-  }
-}
-
-export function invalidateReplacementsCache(): void {
-  replacementsCache = null;
-  replacementsCacheTime = 0;
-}
-
-/**
- * Apply replacement map to any text containing emojis.
- */
 export function applyEmojiReplacements(text: string, scope = 'global'): string {
   if (!text) return text;
-  const reps = loadReplacements().filter((r) => r.scope === 'global' || r.scope === scope);
+  if (!replacementsCache || replacementsCache.length === 0) return text;
+  const reps = replacementsCache.filter((r) => r.scope === 'global' || r.scope === scope);
   if (reps.length === 0) return text;
 
   let out = text;
@@ -184,12 +197,10 @@ export function applyEmojiReplacements(text: string, scope = 'global'): string {
   return out;
 }
 
-/**
- * Apply replacement map to a button's emoji value.
- */
 export function applyReplacementToButtonEmoji(value: string, scope = 'global'): string {
   if (!value) return value;
-  const reps = loadReplacements().filter((r) => r.scope === 'global' || r.scope === scope);
+  if (!replacementsCache || replacementsCache.length === 0) return value;
+  const reps = replacementsCache.filter((r) => r.scope === 'global' || r.scope === scope);
   if (reps.length === 0) return value;
   for (const r of reps) {
     if (r.original === value) {
@@ -200,65 +211,97 @@ export function applyReplacementToButtonEmoji(value: string, scope = 'global'): 
 }
 
 // ============================================================
-// Replacement CRUD
+// Replacement CRUD (async)
 // ============================================================
-export function listReplacements(): ReplacementRow[] {
-  return db
-    .prepare('SELECT * FROM emoji_replacements ORDER BY updated_at DESC')
-    .all() as ReplacementRow[];
+export async function listReplacements(): Promise<ReplacementRow[]> {
+  const r = await dbClient.execute('SELECT * FROM emoji_replacements ORDER BY updated_at DESC');
+  return r.rows.map((row) => ({
+    id: Number(row.id),
+    original: String(row.original),
+    replacement: String(row.replacement),
+    scope: String(row.scope),
+    enabled: Number(row.enabled),
+    created_by: row.created_by != null ? String(row.created_by) : null,
+    created_at: Number(row.created_at),
+    updated_at: Number(row.updated_at),
+  }));
 }
 
-export function upsertReplacement(data: {
+export async function upsertReplacement(data: {
   original: string;
   replacement: string;
   scope?: string;
   enabled?: number;
   createdBy?: string;
-}): number {
+}): Promise<number> {
   const now = Date.now();
   const scope = data.scope ?? 'global';
-  const existing = db
-    .prepare('SELECT id FROM emoji_replacements WHERE original = ? AND scope = ?')
-    .get(data.original, scope) as { id: number } | undefined;
+  const existing = await dbClient.execute({
+    sql: 'SELECT id FROM emoji_replacements WHERE original = ? AND scope = ?',
+    args: [data.original, scope],
+  });
 
-  if (existing) {
-    db.prepare(
-      'UPDATE emoji_replacements SET replacement = ?, enabled = ?, updated_at = ? WHERE id = ?',
-    ).run(data.replacement, data.enabled ?? 1, now, existing.id);
-    invalidateReplacementsCache();
-    return existing.id;
+  let id: number;
+  if (existing.rows.length > 0) {
+    id = Number(existing.rows[0].id);
+    await dbClient.execute({
+      sql: 'UPDATE emoji_replacements SET replacement = ?, enabled = ?, updated_at = ? WHERE id = ?',
+      args: [data.replacement, data.enabled ?? 1, now, id],
+    });
+  } else {
+    const r = await dbClient.execute({
+      sql: 'INSERT INTO emoji_replacements (original, replacement, scope, enabled, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      args: [data.original, data.replacement, scope, data.enabled ?? 1, data.createdBy ?? null, now, now],
+    });
+    id = Number(r.lastInsertRowid ?? 0);
   }
 
-  const info = db
-    .prepare(
-      'INSERT INTO emoji_replacements (original, replacement, scope, enabled, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    )
-    .run(data.original, data.replacement, scope, data.enabled ?? 1, data.createdBy ?? null, now, now);
-  invalidateReplacementsCache();
-  return Number(info.lastInsertRowid);
+  await refreshReplacementsCache();
+  return id;
 }
 
-export function deleteReplacement(id: number): void {
-  db.prepare('DELETE FROM emoji_replacements WHERE id = ?').run(id);
-  invalidateReplacementsCache();
+export async function deleteReplacement(id: number): Promise<void> {
+  await dbClient.execute({ sql: 'DELETE FROM emoji_replacements WHERE id = ?', args: [id] });
+  await refreshReplacementsCache();
 }
 
-export function toggleReplacement(id: number, enabled: boolean): void {
-  db.prepare('UPDATE emoji_replacements SET enabled = ?, updated_at = ? WHERE id = ?')
-    .run(enabled ? 1 : 0, Date.now(), id);
-  invalidateReplacementsCache();
+export async function toggleReplacement(id: number, enabled: boolean): Promise<void> {
+  await dbClient.execute({
+    sql: 'UPDATE emoji_replacements SET enabled = ?, updated_at = ? WHERE id = ?',
+    args: [enabled ? 1 : 0, Date.now(), id],
+  });
+  await refreshReplacementsCache();
+}
+
+async function refreshReplacementsCache(): Promise<void> {
+  const reps = await dbClient.execute('SELECT * FROM emoji_replacements WHERE enabled = 1');
+  replacementsCache = reps.rows.map((r) => ({
+    id: Number(r.id),
+    original: String(r.original),
+    replacement: String(r.replacement),
+    scope: String(r.scope),
+    enabled: Number(r.enabled),
+    created_by: r.created_by != null ? String(r.created_by) : null,
+    created_at: Number(r.created_at),
+    updated_at: Number(r.updated_at),
+  }));
+}
+
+export function invalidateReplacementsCache(): void {
+  // Kept for backward compat — no-op after init; refreshReplacementsCache() is async
+  // Callers should await upsertReplacement/deleteReplacement/toggleReplacement directly
 }
 
 // ============================================================
-// getEmoji — resolves stored value + applies replacements
+// getEmoji — sync read from cache
 // ============================================================
 export function getEmoji(key: string, fallback = ''): string {
-  const row = db
-    .prepare('SELECT value FROM emoji_registry WHERE key = ?')
-    .get(key) as { value: string } | undefined;
+  if (!emojisCache) {
+    warnNotInit();
+  }
 
   let raw: string | null = null;
-
+  const row = emojisCache?.get(key);
   if (row?.value) raw = row.value;
 
   if (!raw) {
@@ -272,8 +315,12 @@ export function getEmoji(key: string, fallback = ''): string {
   return applyEmojiReplacements(resolved);
 }
 
+// ============================================================
+// CRUD
+// ============================================================
 export function getAllEmojis(): EmojiRow[] {
-  return db.prepare('SELECT * FROM emoji_registry ORDER BY key').all() as EmojiRow[];
+  if (!emojisCache) return [];
+  return [...emojisCache.values()].sort((a, b) => a.key.localeCompare(b.key));
 }
 
 export function getAllEmojisResolved(): Array<EmojiRow & { resolved: string }> {
@@ -284,37 +331,60 @@ export function getAllEmojisResolved(): Array<EmojiRow & { resolved: string }> {
 }
 
 export function getEmojiRow(key: string): EmojiRow | undefined {
-  return db.prepare('SELECT * FROM emoji_registry WHERE key = ?').get(key) as EmojiRow | undefined;
+  return emojisCache?.get(key);
 }
 
-export function setEmoji(key: string, value: string): void {
-  db.prepare(`
-    INSERT INTO emoji_registry (key, value, default_value, description, updated_at)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-  `).run(
+export async function setEmoji(key: string, value: string): Promise<void> {
+  const now = Date.now();
+  const defaultEntry = DEFAULT_EMOJIS.find((e) => e.key === key);
+  await dbClient.execute({
+    sql: `INSERT INTO emoji_registry (key, value, default_value, description, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+    args: [key, value, defaultEntry?.value ?? value, defaultEntry?.description ?? null, now],
+  });
+
+  if (!emojisCache) emojisCache = new Map();
+  emojisCache.set(key, {
     key,
     value,
-    DEFAULT_EMOJIS.find((e) => e.key === key)?.value ?? value,
-    DEFAULT_EMOJIS.find((e) => e.key === key)?.description ?? null,
-    Date.now(),
-  );
+    default_value: defaultEntry?.value ?? value,
+    description: defaultEntry?.description ?? null,
+    updated_at: now,
+  });
 }
 
-export function resetEmoji(key: string): void {
+export async function resetEmoji(key: string): Promise<void> {
   const def = DEFAULT_EMOJIS.find((e) => e.key === key);
   if (!def) return;
-  db.prepare('UPDATE emoji_registry SET value = ?, updated_at = ? WHERE key = ?')
-    .run(def.value, Date.now(), key);
+  const now = Date.now();
+  await dbClient.execute({
+    sql: 'UPDATE emoji_registry SET value = ?, updated_at = ? WHERE key = ?',
+    args: [def.value, now, key],
+  });
+  const row = emojisCache?.get(key);
+  if (row) {
+    row.value = def.value;
+    row.updated_at = now;
+  }
 }
 
-export function resetAllEmojis(): void {
+export async function resetAllEmojis(): Promise<void> {
   const now = Date.now();
-  const stmt = db.prepare('UPDATE emoji_registry SET value = default_value, updated_at = ? WHERE key = ?');
-  const tx = db.transaction(() => {
-    for (const e of DEFAULT_EMOJIS) stmt.run(now, e.key);
-  });
-  tx();
+  const stmts = DEFAULT_EMOJIS.map((e) => ({
+    sql: 'UPDATE emoji_registry SET value = default_value, updated_at = ? WHERE key = ?',
+    args: [now, e.key],
+  }));
+  await dbClient.batch(stmts, 'write');
+  if (emojisCache) {
+    for (const e of DEFAULT_EMOJIS) {
+      const row = emojisCache.get(e.key);
+      if (row) {
+        row.value = row.default_value;
+        row.updated_at = now;
+      }
+    }
+  }
 }
 
 // ============================================================

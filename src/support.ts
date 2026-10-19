@@ -1,3 +1,6 @@
+// ============================================================
+// Blade X — Support Center (v5 — Turso)
+// ============================================================
 import {
   Client, Events, Interaction, ButtonInteraction, StringSelectMenuInteraction,
   ModalSubmitInteraction, ActionRowBuilder, ButtonBuilder, ButtonStyle,
@@ -12,7 +15,7 @@ import {
   getNextTicketNumber, getUserOpenTickets,
   createSuggestion, getSuggestion, decideSuggestion,
   addSuggestionVote, getSuggestionVotes,
-  logActivity,
+  logActivity, dbClient,
 } from './database.js';
 import { getEmoji } from './emojiRegistry.js';
 import { buildV2Panel, buildV2Payload, isV2Available } from './ui/v2.js';
@@ -45,19 +48,17 @@ function safeChannelId(key: string): string | null {
   return v && /^\d{17,20}$/.test(v) ? v : null;
 }
 
-// ===== Build select placeholder from text + emoji settings =====
 function buildSelectPlaceholder(): string {
   const emoji = (getSetting('support_select_placeholder_emoji') || '').trim();
   const text = (getSetting('support_select_placeholder') || 'اختر الخدمة...').trim();
   if (emoji) {
-    // Strip a leading emoji from text to avoid duplication, then prepend chosen emoji
     const stripped = text.replace(/^[\p{Extended_Pictographic}\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]+\s*/u, '');
     return `${emoji} ${stripped}`;
   }
   return text;
 }
 
-function ensureDefaults(): void {
+async function ensureDefaults(): Promise<void> {
   const defaults: Record<string, string> = {
     support_enabled: 'true',
     support_panel_channel: '',
@@ -72,7 +73,6 @@ function ensureDefaults(): void {
       '🎧 **Support** — لفتح تذكرة خاصة مع فريق الإدارة.\n' +
       '💡 **Ideas & Suggestions** — لتقديم فكرة أو اقتراح للسيرفر.',
     support_color: '#5865f2',
-    // Phase 1: placeholder split into text + emoji (backward compatible)
     support_select_placeholder: 'اختر الخدمة...',
     support_select_placeholder_emoji: '🎯',
     support_option_support_label: 'Support',
@@ -92,13 +92,13 @@ function ensureDefaults(): void {
     support_transcript_title: '📄 Ticket Transcript',
   };
   for (const [k, v] of Object.entries(defaults)) {
-    if (getSetting(k) === null) setSetting(k, v);
+    if (getSetting(k) === null) await setSetting(k, v);
   }
 }
 
-// ===== نشر رسالة Support الرئيسية (Components V2) =====
+// ===== نشر رسالة Support الرئيسية =====
 export async function publishSupportPanel(client: Client): Promise<{ ok: boolean; error?: string }> {
-  ensureDefaults();
+  await ensureDefaults();
   if (!isV2Available()) return { ok: false, error: 'Components V2 غير متاح في discord.js' };
 
   const channelId = safeChannelId('support_panel_channel');
@@ -159,7 +159,7 @@ export async function publishSupportPanel(client: Client): Promise<{ ok: boolean
       files,
       allowedMentions: { parse: [] },
     });
-    setSetting('support_panel_message_id', msg.id);
+    await setSetting('support_panel_message_id', msg.id);
     console.log('[Blade X] ✅ Support Center panel published');
     return { ok: true };
   } catch (e: any) {
@@ -230,7 +230,7 @@ async function handleSelect(interaction: StringSelectMenuInteraction): Promise<v
 }
 
 // ============================================================
-// Ticket Modal Handler — no legacy `content` with V2
+// Ticket Modal Handler
 // ============================================================
 async function handleTicketModal(interaction: ModalSubmitInteraction): Promise<void> {
   const guild = interaction.guild;
@@ -245,7 +245,7 @@ async function handleTicketModal(interaction: ModalSubmitInteraction): Promise<v
   const description = interaction.fields.getTextInputValue('description').trim().slice(0, 1500);
 
   const maxOpen = parseInt(getSetting('support_max_open_per_user') || '3', 10);
-  const open = getUserOpenTickets(guild.id, interaction.user.id);
+  const open = await getUserOpenTickets(guild.id, interaction.user.id);
   if (open.length >= maxOpen) {
     await interaction.editReply({ content: `❌ لديك بالفعل **${open.length}** تذكرة مفتوحة. الحد الأقصى ${maxOpen}.` });
     return;
@@ -253,7 +253,7 @@ async function handleTicketModal(interaction: ModalSubmitInteraction): Promise<v
 
   const categoryId = safeChannelId('support_ticket_category');
   const adminRoleId = safeChannelId('support_admin_role');
-  const number = getNextTicketNumber(guild.id);
+  const number = await getNextTicketNumber(guild.id);
 
   let channel: TextChannel | null = null;
   let ticketId: number | null = null;
@@ -292,7 +292,7 @@ async function handleTicketModal(interaction: ModalSubmitInteraction): Promise<v
       topic: `Ticket #${number} — ${subject} | Owner: ${interaction.user.id}`,
     });
 
-    ticketId = createTicket({
+    ticketId = await createTicket({
       guild_id: guild.id,
       number,
       user_id: interaction.user.id,
@@ -344,8 +344,7 @@ async function handleTicketModal(interaction: ModalSubmitInteraction): Promise<v
       try { await channel.delete('Ticket send failed').catch(() => {}); } catch {}
       if (ticketId) {
         try {
-          const { default: db } = await import('./database.js');
-          db.prepare('DELETE FROM tickets WHERE id = ?').run(ticketId);
+          await dbClient.execute({ sql: 'DELETE FROM tickets WHERE id = ?', args: [ticketId] });
         } catch { /* ignore */ }
       }
       await interaction.editReply({
@@ -370,7 +369,7 @@ async function handleTicketModal(interaction: ModalSubmitInteraction): Promise<v
       });
     } catch { /* DM مقفل */ }
 
-    logActivity('ticket_create', interaction.user.id, `#${number} ${subject}`);
+    await logActivity('ticket_create', interaction.user.id, `#${number} ${subject}`);
     await interaction.editReply({ content: `✅ تم إنشاء تذكرتك: ${channel}` });
   } catch (e: any) {
     console.error('[Blade X] ❌ handleTicketModal:', e);
@@ -439,7 +438,7 @@ async function handleSuggestionModal(interaction: ModalSubmitInteraction): Promi
       allowedMentions: { parse: [] },
     });
 
-    const suggestionId = createSuggestion({
+    const suggestionId = await createSuggestion({
       guild_id: guild.id,
       user_id: interaction.user.id,
       message_id: msg.id,
@@ -483,7 +482,7 @@ async function handleSuggestionModal(interaction: ModalSubmitInteraction): Promi
       allowedMentions: { parse: [] },
     });
 
-    logActivity('suggestion_create', interaction.user.id, `#${suggestionId} ${title}`);
+    await logActivity('suggestion_create', interaction.user.id, `#${suggestionId} ${title}`);
     await interaction.editReply({ content: `✅ تم إرسال اقتراحك! ${msg.url}` });
   } catch (e: any) {
     console.error('[Blade X] ❌ handleSuggestionModal:', e);
@@ -494,7 +493,7 @@ async function handleSuggestionModal(interaction: ModalSubmitInteraction): Promi
 // ===== Vote Handlers =====
 async function handleVote(interaction: ButtonInteraction, direction: 'up' | 'down'): Promise<void> {
   const suggestionId = Number(interaction.customId.split(':')[3]);
-  const suggestion = getSuggestion(suggestionId);
+  const suggestion = await getSuggestion(suggestionId);
   if (!suggestion) {
     await interaction.reply({ content: '❌ الاقتراح غير موجود.', flags: MessageFlags.Ephemeral });
     return;
@@ -504,9 +503,9 @@ async function handleVote(interaction: ButtonInteraction, direction: 'up' | 'dow
     return;
   }
 
-  addSuggestionVote(suggestionId, interaction.user.id, direction === 'up' ? 1 : -1);
+  await addSuggestionVote(suggestionId, interaction.user.id, direction === 'up' ? 1 : -1);
 
-  const votes = getSuggestionVotes(suggestionId);
+  const votes = await getSuggestionVotes(suggestionId);
   const guild = interaction.guild;
   if (!guild) return;
   const ch = guild.channels.cache.get(suggestion.channel_id) as TextChannel | undefined;
@@ -556,12 +555,12 @@ async function handleSuggestionDecision(interaction: ButtonInteraction, decision
     return;
   }
   const suggestionId = Number(interaction.customId.split(':')[2]);
-  const suggestion = getSuggestion(suggestionId);
+  const suggestion = await getSuggestion(suggestionId);
   if (!suggestion) { await interaction.reply({ content: '❌ غير موجود.', flags: MessageFlags.Ephemeral }); return; }
   if (suggestion.status !== 'pending') { await interaction.reply({ content: '⚠️ تم البت فيه.', flags: MessageFlags.Ephemeral }); return; }
 
-  decideSuggestion(suggestionId, decision, interaction.user.id);
-  logActivity('suggestion_' + decision, interaction.user.id, `#${suggestionId}`);
+  await decideSuggestion(suggestionId, decision, interaction.user.id);
+  await logActivity('suggestion_' + decision, interaction.user.id, `#${suggestionId}`);
 
   const guild = interaction.guild;
   if (!guild) return;
@@ -665,7 +664,7 @@ async function buildTranscript(channel: TextChannel, ticket: any): Promise<{ htm
 // ===== Close Ticket =====
 async function handleCloseTicket(interaction: ButtonInteraction): Promise<void> {
   const ticketId = Number(interaction.customId.split(':')[2]);
-  const ticket = getTicket(ticketId);
+  const ticket = await getTicket(ticketId);
   if (!ticket) {
     await interaction.reply({ content: '❌ التذكرة غير موجودة.', flags: MessageFlags.Ephemeral });
     return;
@@ -685,7 +684,7 @@ async function handleCloseTicket(interaction: ButtonInteraction): Promise<void> 
     return;
   }
 
-  closeTicket(ticketId, interaction.user.id);
+  await closeTicket(ticketId, interaction.user.id);
 
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
@@ -746,10 +745,11 @@ async function handleCloseTicket(interaction: ButtonInteraction): Promise<void> 
     }
   }
 
-  const { default: db } = await import('./database.js');
   try {
-    db.prepare('UPDATE tickets SET transcript_sent = ?, close_status = ?, close_error = ? WHERE id = ?')
-      .run(transcriptSent ? 1 : 0, transcriptSent ? 'archived' : 'archive_failed', transcriptError, ticketId);
+    await dbClient.execute({
+      sql: 'UPDATE tickets SET transcript_sent = ?, close_status = ?, close_error = ? WHERE id = ?',
+      args: [transcriptSent ? 1 : 0, transcriptSent ? 'archived' : 'archive_failed', transcriptError, ticketId],
+    });
   } catch { /* ignore */ }
 
   if (!transcriptSent) {
@@ -770,13 +770,13 @@ async function handleCloseTicket(interaction: ButtonInteraction): Promise<void> 
     await interaction.editReply({ content: `⚠️ الأرشفة نجحت لكن فشل حذف القناة: ${e?.message ?? 'خطأ'}` });
   }
 
-  logActivity('ticket_close', interaction.user.id, `#${ticket.number}`);
+  await logActivity('ticket_close', interaction.user.id, `#${ticket.number}`);
 }
 
 // ===== التسجيل =====
 export function registerSupport(client: Client): void {
   botClient = client;
-  ensureDefaults();
+  void ensureDefaults().catch(e => console.error('[Blade X] ensureDefaults failed:', e));
 
   client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     try {

@@ -1,3 +1,6 @@
+// ============================================================
+// Blade X — Moderation Commands (v5 — Turso)
+// ============================================================
 import {
   ChatInputCommandInteraction,
   PermissionFlagsBits,
@@ -19,9 +22,6 @@ import { parseDuration, formatDuration, safeDM, getModerationEmbed } from './uti
 import { logBanAction, logTimeoutAction, logUnbanAction, logUntimeoutAction } from './moderationLogs.js';
 import { config } from './config.js';
 
-// ============================================================
-// Logger helper
-// ============================================================
 function logWarn(op: string, ctx: Record<string, unknown> = {}, err?: unknown): void {
   const ctxStr = Object.entries(ctx)
     .filter(([, v]) => v !== undefined && v !== null && v !== '')
@@ -81,7 +81,6 @@ export const moderationCommands = [
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels)
     .addIntegerOption(o => o.setName('seconds').setDescription('عدد الثواني (0-21600)').setRequired(true).setMinValue(0).setMaxValue(21600)),
 
-  // /move-all
   new SlashCommandBuilder()
     .setName('move-all')
     .setDescription('نقل جميع الأعضاء من قناة صوتية إلى أخرى')
@@ -204,14 +203,14 @@ export function registerModerationButtons(client: Client): void {
       if (otherFailed > 0) lines.push(`⚠️ **فشل نقلهم:** ${otherFailed}`);
 
       await interaction.editReply({ content: lines.join('\n') });
-      logActivity('move_all', interaction.user.id, `moved ${success}/${total} from ${session.sourceId} to ${session.destId}`);
+      await logActivity('move_all', interaction.user.id, `moved ${success}/${total} from ${session.sourceId} to ${session.destId}`);
       return;
     }
   });
 }
 
 // ============================================================
-// Hierarchy check helper
+// Hierarchy check
 // ============================================================
 async function checkHierarchy(interaction: ChatInputCommandInteraction, target: GuildMember): Promise<string | null> {
   const me = interaction.guild?.members.me;
@@ -244,8 +243,8 @@ export async function handleModerationCommand(interaction: ChatInputCommandInter
         const dmStatus = await safeDM(member.user, dmEmbed);
 
         await member.kick(reason ?? undefined);
-        logModeration('kick', member.id, interaction.user.id, reason, null, dmStatus);
-        logActivity('kick', member.id, `طُرد بواسطة ${interaction.user.tag}`);
+        await logModeration('kick', member.id, interaction.user.id, reason, null, dmStatus);
+        await logActivity('kick', member.id, `طُرد بواسطة ${interaction.user.tag}`);
         await interaction.editReply({ content: `✅ تم طرد ${member.user.tag}.` });
         return true;
       }
@@ -278,8 +277,8 @@ export async function handleModerationCommand(interaction: ChatInputCommandInter
         const dmStatus = await safeDM(targetUser, dmEmbed);
 
         await interaction.guild!.bans.create(userId, { reason: reason ?? undefined, deleteMessageSeconds: 0 });
-        logModeration('ban', userId, interaction.user.id, reason, durationMs, dmStatus);
-        logActivity('ban', userId, `محظور بواسطة ${interaction.user.tag}`);
+        await logModeration('ban', userId, interaction.user.id, reason, durationMs, dmStatus);
+        await logActivity('ban', userId, `محظور بواسطة ${interaction.user.tag}`);
 
         await logBanAction({
           guild: interaction.guild!,
@@ -301,8 +300,8 @@ export async function handleModerationCommand(interaction: ChatInputCommandInter
         try {
           const banInfo = await interaction.guild!.bans.fetch(userId).catch(() => null);
           await interaction.guild!.bans.remove(userId);
-          logModeration('unban', userId, interaction.user.id, null, null, 'n/a');
-          logActivity('unban', userId, `فُك الحظر بواسطة ${interaction.user.tag}`);
+          await logModeration('unban', userId, interaction.user.id, null, null, 'n/a');
+          await logActivity('unban', userId, `فُك الحظر بواسطة ${interaction.user.tag}`);
           if (banInfo) await logUnbanAction(interaction.guild!, banInfo.user, interaction.user);
           await interaction.editReply({ content: `✅ تم فك الحظر عن ${userId}.` });
         } catch {
@@ -328,8 +327,8 @@ export async function handleModerationCommand(interaction: ChatInputCommandInter
         const dmStatus = await safeDM(member.user, dmEmbed);
 
         await member.timeout(durationMs, reason ?? undefined);
-        logModeration('timeout', member.id, interaction.user.id, reason, durationMs, dmStatus);
-        logActivity('timeout', member.id, `إسكات بواسطة ${interaction.user.tag}`);
+        await logModeration('timeout', member.id, interaction.user.id, reason, durationMs, dmStatus);
+        await logActivity('timeout', member.id, `إسكات بواسطة ${interaction.user.tag}`);
 
         await logTimeoutAction({
           guild: interaction.guild!,
@@ -347,7 +346,7 @@ export async function handleModerationCommand(interaction: ChatInputCommandInter
       case 'untimeout': {
         const member = interaction.options.getMember('member') as GuildMember;
         await member.timeout(null);
-        logModeration('untimeout', member.id, interaction.user.id, null, null, 'n/a');
+        await logModeration('untimeout', member.id, interaction.user.id, null, null, 'n/a');
         await logUntimeoutAction(interaction.guild!, member, interaction.user);
         await interaction.editReply({ content: `✅ تم إزالة الإسكات عن ${member.user.tag}.` });
         return true;
@@ -370,7 +369,6 @@ export async function handleModerationCommand(interaction: ChatInputCommandInter
       }
 
       case 'move-all': {
-        // ✅ Executor permission check
         if (!interaction.memberPermissions?.has(PermissionFlagsBits.MoveMembers)) {
           await interaction.editReply({ content: '❌ تحتاج صلاحية **Move Members** لتنفيذ هذا الأمر.' });
           return true;
@@ -403,7 +401,6 @@ export async function handleModerationCommand(interaction: ChatInputCommandInter
           return true;
         }
 
-        // ✅ Bot's guild-level permissions
         if (!me.permissions.has(PermissionFlagsBits.MoveMembers)) {
           await interaction.editReply({ content: '❌ البوت لا يملك صلاحية **Move Members** — لا يمكنه النقل.' });
           return true;
@@ -413,7 +410,6 @@ export async function handleModerationCommand(interaction: ChatInputCommandInter
           return true;
         }
 
-        // ✅ Channel-level permissions
         const srcPerms = source.permissionsFor(me);
         const dstPerms = dest.permissionsFor(me);
         if (!srcPerms?.has(PermissionFlagsBits.ViewChannel) || !dstPerms?.has(PermissionFlagsBits.ViewChannel)) {
@@ -475,7 +471,7 @@ export async function handleModerationCommand(interaction: ChatInputCommandInter
 export function startPunishmentChecker(client: import('discord.js').Client): void {
   setInterval(async () => {
     try {
-      const active = getActiveTemporaryPunishments();
+      const active = await getActiveTemporaryPunishments();
       const now = Date.now();
       for (const p of active) {
         if (p.expires_at <= now) {

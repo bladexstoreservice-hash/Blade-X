@@ -373,9 +373,11 @@ async function buildAuthorTitle(
   return title.trim() || userMention;
 }
 
-function getAuthorPostCount(authorId: string, channelId: string): number {
+// ✅ ASYNC — كانت متزامنة وتستدعي getUserMediaPosts
+async function getAuthorPostCount(authorId: string, channelId: string): Promise<number> {
   try {
-    return getUserMediaPosts(authorId, 500).filter((p) => p.display_channel_id === channelId).length;
+    const posts = await getUserMediaPosts(authorId, 500);
+    return posts.filter((p) => p.display_channel_id === channelId).length;
   } catch { return 0; }
 }
 
@@ -384,7 +386,8 @@ async function buildReactorsLine(
   post: MediaPost, channel: MediaChannel, count: number,
 ): Promise<string> {
   if (count === 0) return 'لا يوجد متفاعلون بعد';
-  const userIds = getMediaReactionUsers(post.id, 10);
+  // ✅ await مستعاد
+  const userIds = await getMediaReactionUsers(post.id, 10);
   if (userIds.length === 0) return 'لا يوجد متفاعلون بعد';
   const emoji = (await resolveEmojiTextAsync(client, guild, channel.reaction_emoji, 'reaction_emoji')) || DEFAULT_EMOJI.reaction;
   const label = channel.footer_from_label || 'Pumpkins from';
@@ -476,7 +479,8 @@ async function buildPostContainer(
   container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
 
   const reactorsLine = await buildReactorsLine(client, guild, post, channel, reactionCount);
-  const postCount = post.source_author_id ? getAuthorPostCount(post.source_author_id, post.display_channel_id) : 0;
+  // ✅ await مستعاد
+  const postCount = post.source_author_id ? await getAuthorPostCount(post.source_author_id, post.display_channel_id) : 0;
   const timeAgo = `<t:${Math.floor(post.created_at / 1000)}:R>`;
   const footerText = `${reactorsLine}\n-# ${postCount} posts · ${timeAgo}`;
 
@@ -509,7 +513,8 @@ async function getMediaForPost(post: MediaPost, guild: Guild | null): Promise<{
   let usedDisk = false;
 
   let dbFiles: MediaFileRow[] = [];
-  try { dbFiles = getMediaFiles(post.id); }
+  // ✅ await مستعاد
+  try { dbFiles = await getMediaFiles(post.id); }
   catch (e) { log('warn', 'media_files_read_failed', { postId: post.id }, e); }
 
   const archiveRows = dbFiles.filter(f => f.storage_source === 'archive' && f.archive_channel_id && f.archive_message_id);
@@ -710,12 +715,14 @@ async function handleSharePick(
     postId, sessionId, userId: interaction.user.id, count: interaction.values.length,
   });
 
-  const post = getMediaPostById(postId);
+  // ✅ await مستعاد
+  const post = await getMediaPostById(postId);
   if (!post) {
     await interaction.reply({ content: '❌ المنشور غير موجود.', flags: MessageFlags.Ephemeral });
     return;
   }
-  const channelCfg = getMediaChannel(post.display_channel_id);
+  // ✅ await مستعاد
+  const channelCfg = await getMediaChannel(post.display_channel_id);
   if (!channelCfg) {
     await interaction.reply({ content: '❌ القناة غير مهيأة.', flags: MessageFlags.Ephemeral });
     return;
@@ -835,12 +842,14 @@ async function handleShareConfirm(
     return;
   }
 
-  const post = getMediaPostById(postId);
+  // ✅ await مستعاد
+  const post = await getMediaPostById(postId);
   if (!post) {
     await interaction.reply({ content: '❌ المنشور غير موجود.', flags: MessageFlags.Ephemeral });
     return;
   }
-  const channelCfg = getMediaChannel(post.display_channel_id);
+  // ✅ await مستعاد
+  const channelCfg = await getMediaChannel(post.display_channel_id);
   if (!channelCfg) {
     await interaction.reply({ content: '❌ القناة غير مهيأة.', flags: MessageFlags.Ephemeral });
     return;
@@ -856,7 +865,8 @@ async function handleShareConfirm(
 
   const shareMedia: { name: string; buffer: Buffer; type: 'image' | 'video' }[] = [];
   try {
-    const rows = getMediaFiles(post.id);
+    // ✅ await مستعاد
+    const rows = await getMediaFiles(post.id);
     for (const row of rows) {
       if (row.storage_source === 'archive' && row.archive_channel_id && row.archive_message_id) {
         try {
@@ -975,8 +985,6 @@ async function handleShareConfirm(
     if (failed.length > 0) lines.push(failed.join('، '));
   }
 
-  // ✅ REMOVED: `lines.push('', '> ملاحظة: فتح المنشور يتطلب صلاحية `View Channel` في القناة.');`
-
   const resultContainer = new ContainerBuilder();
   resultContainer.setAccentColor(
     success === total ? 0x57f287 : success > 0 ? 0xf59e0b : 0xed4245,
@@ -1020,8 +1028,10 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
   const guildId = message.guild.id;
   const guildRef = message.guild;
 
-  if (!isMediaChannel(message.channelId)) return;
-  const channelCfg = getMediaChannel(message.channelId);
+  // ✅ await مستعاد
+  if (!await isMediaChannel(message.channelId)) return;
+  // ✅ await مستعاد
+  const channelCfg = await getMediaChannel(message.channelId);
   if (!channelCfg) return;
   if (channelCfg.ignore_bots && message.author.bot) return;
 
@@ -1029,7 +1039,8 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
   if (!ch.isTextBased() || ch.isDMBased() || !('send' in ch)) return;
   const textChannel = ch as TextChannel;
 
-  if (getMediaPostBySource(message.id)) return;
+  // ✅ await مستعاد
+  if (await getMediaPostBySource(message.id)) return;
 
   const attachments = [...message.attachments.values()];
   const supported: { att: (typeof attachments)[0]; type: 'image' | 'video' }[] = [];
@@ -1075,7 +1086,8 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
 
   let postId: number;
   try {
-    postId = reserveMediaPost({
+    // ✅ await مستعاد
+    postId = await reserveMediaPost({
       guild_id: guildId,
       source_channel_id: message.channelId,
       source_message_id: message.id,
@@ -1116,7 +1128,8 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
     if (archiveChannel) {
       const archived = await uploadToArchive(archiveChannel, r.buffer, r.safeName);
       if (archived) {
-        insertMediaFile({
+        // ✅ await مستعاد
+        await insertMediaFile({
           postId, fileName: r.safeName, filePath: '', mediaType: r.item.type, size: r.buffer.length,
           storageSource: 'archive',
           archiveChannelId: archived.channelId, archiveMessageId: archived.messageId,
@@ -1130,7 +1143,8 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
     }
     const saved = saveMediaBuffer(postId, r.safeName, r.buffer);
     if (saved) {
-      insertMediaFile({
+      // ✅ await مستعاد
+      await insertMediaFile({
         postId, fileName: saved.fileName, filePath: saved.filePath,
         mediaType: r.item.type, size: saved.size, storageSource: 'disk',
       });
@@ -1143,7 +1157,8 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
 
   if (gallery.length === 0) {
     log('error', 'no_files_prepared', { postId, messageId: message.id });
-    try { deleteMediaPost(postId); deleteMediaForPost(postId); } catch { /* ignore */ }
+    // ✅ await مستعاد
+    try { await deleteMediaPost(postId); deleteMediaForPost(postId); } catch { /* ignore */ }
     return;
   }
   log('info', 'media_persistence_success', { postId, count: gallery.length, archive: archiveUsed, disk: diskUsed });
@@ -1171,11 +1186,13 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
     log('info', 'post_sent', { displayMsgId: displayMsg.id, postId, filesSent: files.length });
   } catch (e) {
     log('error', 'post_send_failed', { postId }, e);
-    try { deleteMediaPost(postId); deleteMediaForPost(postId); } catch { /* ignore */ }
+    // ✅ await مستعاد
+    try { await deleteMediaPost(postId); deleteMediaForPost(postId); } catch { /* ignore */ }
     return;
   }
 
-  updateMediaPostDisplay(postId, displayMsg.id);
+  // ✅ await مستعاد
+  await updateMediaPostDisplay(postId, displayMsg.id);
 
   let threadId: string | null = null;
   try {
@@ -1187,7 +1204,8 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
       reason: 'Media Show discussion',
     });
     threadId = thread.id;
-    updateMediaPostThread(postId, threadId);
+    // ✅ await مستعاد
+    await updateMediaPostThread(postId, threadId);
     log('info', 'post_thread_created', { postId, threadId });
   } catch (e) {
     log('warn', 'thread_create_failed', { postId }, e);
@@ -1214,7 +1232,8 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
   const separatorMsg = await sendLineSeparator(textChannel);
   if (separatorMsg) {
     try {
-      updateMediaPostSeparator(postId, separatorMsg.channelId, separatorMsg.id);
+      // ✅ await مستعاد
+      await updateMediaPostSeparator(postId, separatorMsg.channelId, separatorMsg.id);
     } catch (e) {
       log('warn', 'separator_db_update_failed', { postId }, e);
     }
@@ -1226,7 +1245,8 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
     if (canDelete) await message.delete().catch(() => {});
   } catch { /* ignore */ }
 
-  logActivity('media_post', message.author.id, `${message.channelId}:${message.id}`);
+  // ✅ await مستعاد
+  await logActivity('media_post', message.author.id, `${message.channelId}:${message.id}`);
   log('info', 'post_complete', {
     postId, totalMs: Date.now() - tStart, archiveUsed, diskUsed,
     source: archiveUsed > 0 && diskUsed === 0 ? 'archive' : archiveUsed > 0 ? 'archive+disk' : 'disk',
@@ -1239,7 +1259,8 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
 async function buildViewAllContainer(
   client: Client, post: MediaPost,
 ): Promise<{ container: ContainerBuilder; files: AttachmentBuilder[] }> {
-  const channelCfg = getMediaChannel(post.display_channel_id);
+  // ✅ await مستعاد
+  const channelCfg = await getMediaChannel(post.display_channel_id);
   const guild = client.guilds.cache.get(post.guild_id);
   const member = guild ? await guild.members.fetch(post.source_author_id).catch(() => null) : null;
   const user = member?.user ?? await client.users.fetch(post.source_author_id).catch(() => null);
@@ -1283,14 +1304,16 @@ async function buildViewAllContainer(
   }
   container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
 
-  const reactionCount = getMediaReactionCount(post.id);
+  // ✅ await مستعاد
+  const reactionCount = await getMediaReactionCount(post.id);
   const reactorsLine = channelCfg
     ? await buildReactorsLine(client, guild ?? null, post, channelCfg, reactionCount)
     : `⭐ **${reactionCount}** reactions`;
   container.addTextDisplayComponents(new TextDisplayBuilder().setContent(reactorsLine));
   container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
 
-  const allPosts = getUserMediaPosts(post.source_author_id, 500)
+  // ✅ await مستعاد
+  const allPosts = (await getUserMediaPosts(post.source_author_id, 500))
     .filter((p) => p.display_channel_id === post.display_channel_id)
     .sort((a, b) => b.created_at - a.created_at);
   const ids = allPosts.map((p) => p.id);
@@ -1353,13 +1376,15 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
     return;
   }
 
-  const post = getMediaPostById(postId);
+  // ✅ await مستعاد
+  const post = await getMediaPostById(postId);
   if (!post) {
     await interaction.reply({ content: '❌ المنشور غير موجود.', flags: MessageFlags.Ephemeral });
     return;
   }
 
-  const channelCfg = getMediaChannel(post.display_channel_id);
+  // ✅ await مستعاد
+  const channelCfg = await getMediaChannel(post.display_channel_id);
   if (!channelCfg) {
     await interaction.reply({ content: '❌ القناة غير مهيأة.', flags: MessageFlags.Ephemeral });
     return;
@@ -1386,10 +1411,11 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
     let count = 0;
     let has = false;
     try {
-      has = hasMediaReaction(postId, interaction.user.id);
-      if (has) removeMediaReaction(postId, interaction.user.id);
-      else addMediaReaction(postId, interaction.user.id, channelCfg.reaction_emoji);
-      count = getMediaReactionCount(postId);
+      // ✅ await على كل استدعاء
+      has = await hasMediaReaction(postId, interaction.user.id);
+      if (has) await removeMediaReaction(postId, interaction.user.id);
+      else await addMediaReaction(postId, interaction.user.id, channelCfg.reaction_emoji);
+      count = await getMediaReactionCount(postId);
     } catch (e) { log('error', 'react_db_failed', { postId }, e); return; }
     try {
       const displayCh = guild.channels.cache.get(post.display_channel_id) as TextChannel | undefined;
@@ -1446,10 +1472,11 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
           }
         } catch (e) { log('warn', 'separator_delete_failed', { postId }, e); }
       }
-      deleteMediaFilesForPost(postId);
+      // ✅ await مستعاد
+      await deleteMediaFilesForPost(postId);
       deleteMediaForPost(postId);
-      deleteMediaPost(postId);
-      logActivity('media_delete', interaction.user.id, `${postId}`);
+      await deleteMediaPost(postId);
+      await logActivity('media_delete', interaction.user.id, `${postId}`);
       await interaction.reply({ content: '✅ تم حذف العرض.', flags: MessageFlags.Ephemeral });
     } catch (e) {
       log('error', 'delete_failed', {}, e);
@@ -1476,7 +1503,8 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
   if (action === 'nav') {
     const dir = parts[2];
     if (dir === 'count') { await interaction.deferUpdate().catch(() => {}); return; }
-    const sorted = getUserMediaPosts(post.source_author_id, 500)
+    // ✅ await مستعاد
+    const sorted = (await getUserMediaPosts(post.source_author_id, 500))
       .filter((p) => p.display_channel_id === post.display_channel_id)
       .sort((a, b) => b.created_at - a.created_at);
     const ids = sorted.map((p) => p.id);
@@ -1486,7 +1514,8 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
     if (dir === 'next') idx = Math.min(ids.length - 1, idx + 1);
     const newPostId = ids[idx];
     if (!newPostId || newPostId === postId) { await interaction.deferUpdate().catch(() => {}); return; }
-    const newPost = getMediaPostById(newPostId);
+    // ✅ await مستعاد
+    const newPost = await getMediaPostById(newPostId);
     if (!newPost) { await interaction.deferUpdate().catch(() => {}); return; }
     try {
       const { container, files } = await buildViewAllContainer(interaction.client, newPost);
@@ -1601,14 +1630,25 @@ export function registerMediaShow(client: Client): void {
     }
   });
 
+  // ✅ ThreadDelete — إصلاح `db.prepare` → `db.execute` (async)
   client.on(Events.ThreadDelete, (thread) => {
-    try {
-      const row = db.prepare('SELECT id FROM media_posts WHERE thread_id = ?').get(thread.id) as { id: number } | undefined;
-      if (row) {
-        db.prepare('UPDATE media_posts SET thread_id = NULL WHERE id = ?').run(row.id);
-        log('info', 'thread_deleted_cleaned', { threadId: thread.id, postId: row.id });
-      }
-    } catch (e) { log('error', 'thread_delete_cleanup_failed', { threadId: thread.id }, e); }
+    void (async () => {
+      try {
+        const r = await db.execute({
+          sql: 'SELECT id FROM media_posts WHERE thread_id = ?',
+          args: [thread.id],
+        });
+        const row = r.rows[0];
+        if (row) {
+          const rowId = Number(row.id);
+          await db.execute({
+            sql: 'UPDATE media_posts SET thread_id = NULL WHERE id = ?',
+            args: [rowId],
+          });
+          log('info', 'thread_deleted_cleaned', { threadId: thread.id, postId: rowId });
+        }
+      } catch (e) { log('error', 'thread_delete_cleanup_failed', { threadId: thread.id }, e); }
+    })();
   });
 
   startStorageCleanup();

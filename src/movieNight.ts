@@ -1,3 +1,6 @@
+// ============================================================
+// Blade X — Movie Night Review (v5 — Turso)
+// ============================================================
 import {
   Client, Events, Interaction, ButtonInteraction,
   StringSelectMenuInteraction, ActionRowBuilder, StringSelectMenuBuilder,
@@ -41,7 +44,6 @@ function getReviewAskPath(): string | null {
   return resolveAsset('assets/Review-ask.png', 'assets/review-ask.png', 'assets/Review-Ask.png');
 }
 
-// ✅ Robust thanks image discovery
 function getThanksPath(): string | null {
   const candidates = [
     'assets/thanks-for-review.png',
@@ -61,7 +63,6 @@ function getThanksPath(): string | null {
     } catch { /* skip */ }
   }
 
-  // Fallback: folder scan
   const folder = path.join(PROJECT_ROOT, 'assets', 'thanks-for-review');
   try {
     if (fs.existsSync(folder) && fs.statSync(folder).isDirectory()) {
@@ -123,7 +124,7 @@ function formatCommentInlineCode(comment: string): string {
 }
 
 // ============================================================
-// ✅ Thanks card — image at TOP + unique filename
+// Thanks card
 // ============================================================
 function buildThanksCard(
   movieName: string,
@@ -134,7 +135,6 @@ function buildThanksCard(
   const container = new ContainerBuilder();
   container.setAccentColor(getColor('color.success', 0x57f287));
 
-  // 1. Image at TOP
   const thanksPath = getThanksPath();
   if (thanksPath) {
     try {
@@ -153,14 +153,11 @@ function buildThanksCard(
     }
   }
 
-  // 2. Title
   container.addTextDisplayComponents(
     new TextDisplayBuilder().setContent(`## ${getText('movie_night.thanks.title', {}, '✅ تم إرسال تقييمك')}`),
   );
-
   container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
 
-  // 3. Stars + rating
   container.addTextDisplayComponents(
     new TextDisplayBuilder().setContent(
       getText(
@@ -170,24 +167,19 @@ function buildThanksCard(
       ),
     ),
   );
-
   container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
 
-  // 4. Movie
   container.addTextDisplayComponents(
     new TextDisplayBuilder().setContent(
       getText('movie_night.thanks.movie', { movie: movieName }, `🎬 **الفيلم:** ${movieName}`),
     ),
   );
-
   container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
 
-  // 5. Thank you
   container.addTextDisplayComponents(
     new TextDisplayBuilder().setContent(getText('movie_night.thanks.closing', {}, 'شكرًا لمشاركتك! 🤍')),
   );
 
-  // 6. Link button
   if (reviewUrl) {
     container.addSeparatorComponents(new SeparatorBuilder().setDivider(false).setSpacing(1));
     container.addActionRowComponents(
@@ -201,7 +193,6 @@ function buildThanksCard(
     );
   }
 
-  // 7. Footer
   container.addTextDisplayComponents(
     new TextDisplayBuilder().setContent(`-# ${config.botName} · Movie Night`),
   );
@@ -240,7 +231,6 @@ function buildDmStartCard(
       `# ${getText('movie_night.dm.title', { movie: movieName }, `🎬 ${movieName}`)}`,
     ),
   );
-
   container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
 
   container.addTextDisplayComponents(
@@ -252,7 +242,6 @@ function buildDmStartCard(
       ),
     ),
   );
-
   container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
 
   container.addTextDisplayComponents(
@@ -323,7 +312,7 @@ function buildDmComponents(sessionId: number, hasRating: boolean, hasComment: bo
 }
 
 // ============================================================
-// ✅ FIXED: refreshUserDM — allDone = hasRating (comment is optional)
+// refreshUserDM
 // ============================================================
 async function refreshUserDM(sessionId: number, userId: string): Promise<void> {
   const c = botClient;
@@ -331,7 +320,7 @@ async function refreshUserDM(sessionId: number, userId: string): Promise<void> {
   const botUserId = c.user?.id;
   if (!botUserId) return;
 
-  const session = getMovieSession(sessionId);
+  const session = await getMovieSession(sessionId);
   if (!session) return;
   if (!isV2Available()) return;
 
@@ -339,7 +328,7 @@ async function refreshUserDM(sessionId: number, userId: string): Promise<void> {
     const user = await c.users.fetch(userId).catch(() => null);
     if (!user) return;
 
-    const rating = getMovieRatingFull(sessionId, userId);
+    const rating = await getMovieRatingFull(sessionId, userId);
     const hasRating = (rating?.rating ?? 0) > 0;
     const hasComment = !!(rating?.comment && rating.comment_posted);
 
@@ -350,11 +339,10 @@ async function refreshUserDM(sessionId: number, userId: string): Promise<void> {
     const botMsg = messages.find((m: Message) => m.author.id === botUserId && m.components.length > 0);
     if (!botMsg) return;
 
-    // ✅ CRITICAL FIX: allDone = hasRating alone (comment is optional)
     const allDone = hasRating;
 
     if (allDone) {
-      const reviewMessageId = getReviewMessageId(sessionId, userId);
+      const reviewMessageId = await getReviewMessageId(sessionId, userId);
       const threadId = session.thread_id;
       const reviewUrl = (threadId && reviewMessageId)
         ? `https://discord.com/channels/${config.guildId}/${threadId}/${reviewMessageId}`
@@ -369,7 +357,6 @@ async function refreshUserDM(sessionId: number, userId: string): Promise<void> {
       if (files.length > 0) payload.files = files;
       await botMsg.edit(payload);
     } else {
-      // User hasn't rated yet → show start/partial card
       const state: 'initial' | 'partial' = hasComment ? 'partial' : 'initial';
       const { container, files } = buildDmStartCard(
         session.movie_name, state, null, rating?.comment ?? null,
@@ -392,7 +379,7 @@ async function refreshUserDM(sessionId: number, userId: string): Promise<void> {
 // Thread starter + summary
 // ============================================================
 async function ensureMainMessageAndThread(c: Client, sessionId: number): Promise<void> {
-  const session = getMovieSession(sessionId);
+  const session = await getMovieSession(sessionId);
   if (!session) return;
   const guild = c.guilds.cache.get(config.guildId);
   if (!guild) return;
@@ -446,7 +433,7 @@ async function ensureMainMessageAndThread(c: Client, sessionId: number): Promise
 
     const summary = await thread.send(buildV2Payload(summaryContainer) as any);
 
-    updateMovieSession(sessionId, { thread_id: thread.id, summary_message_id: summary.id });
+    await updateMovieSession(sessionId, { thread_id: thread.id, summary_message_id: summary.id });
     console.log(`[Blade X] ✅ Movie Night: main + thread + panel created`);
   } catch (e) { console.error('[Blade X] ❌ فشل إنشاء Thread:', e); }
 }
@@ -455,7 +442,7 @@ async function ensureMainMessageAndThread(c: Client, sessionId: number): Promise
 // Summary — average only
 // ============================================================
 async function updateSummary(c: Client, sessionId: number): Promise<void> {
-  const session = getMovieSession(sessionId);
+  const session = await getMovieSession(sessionId);
   if (!session?.thread_id || !session.summary_message_id) return;
   const guild = c.guilds.cache.get(config.guildId);
   if (!guild) return;
@@ -464,7 +451,7 @@ async function updateSummary(c: Client, sessionId: number): Promise<void> {
   try {
     const thread = await guild.channels.fetch(session.thread_id) as ThreadChannel;
     const msg = await thread.messages.fetch(session.summary_message_id);
-    const stats = getMovieStatsFull(sessionId);
+    const stats = await getMovieStatsFull(sessionId);
 
     const avgText = stats.ratingsCount > 0 ? `**${stats.average.toFixed(2)} / 5**` : '*لا توجد تقييمات بعد.*';
     const avgStars = stats.ratingsCount > 0 ? `\n${starString(stats.average)}` : '';
@@ -507,7 +494,7 @@ async function postReviewToThread(
   c: Client, sessionId: number, userId: string,
   rating: number, comment: string | null,
 ): Promise<string | null> {
-  const session = getMovieSession(sessionId);
+  const session = await getMovieSession(sessionId);
   if (!session?.thread_id) return null;
   const guild = c.guilds.cache.get(config.guildId);
   if (!guild) return null;
@@ -534,7 +521,6 @@ async function postReviewToThread(
       } catch { /* ignore */ }
     }
     container.addSectionComponents(mentionSection);
-
     container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
 
     container.addTextDisplayComponents(
@@ -572,7 +558,7 @@ async function postReviewToThread(
 export async function startMovieSession(
   client: Client, movieName: string, createdBy: string,
 ): Promise<{ sessionId: number; sent: number; failed: number; total: number } | { error: string }> {
-  cleanupOldMovieDrafts();
+  await cleanupOldMovieDrafts();
 
   const voiceChannelId = getSetting('movie_voice_channel_id');
   const reviewsChannelId = getSetting('movie_reviews_channel_id');
@@ -588,10 +574,10 @@ export async function startMovieSession(
   }
   const members = [...voiceChannel.members.values()].filter(m => !m.user.bot);
   if (members.length === 0) return { error: '⚠️ لا يوجد أعضاء في قناة السينما.' };
-  const active = getActiveMovieSession();
+  const active = await getActiveMovieSession();
   if (active) return { error: `⚠️ توجد جلسة مفتوحة بالفعل: **${active.movie_name}**.` };
 
-  const sessionId = createMovieSession(movieName, voiceChannelId, reviewsChannelId, createdBy);
+  const sessionId = await createMovieSession(movieName, voiceChannelId, reviewsChannelId, createdBy);
   await ensureMainMessageAndThread(client, sessionId);
 
   let sent = 0, failed = 0;
@@ -610,24 +596,24 @@ export async function startMovieSession(
 
       await m.send(payload);
 
-      addMovieRecipient(sessionId, m.id, 'sent');
+      await addMovieRecipient(sessionId, m.id, 'sent');
       sent++;
     } catch (e) {
       console.error('[Blade X] ❌ فشل DM:', e);
-      addMovieRecipient(sessionId, m.id, 'failed');
+      await addMovieRecipient(sessionId, m.id, 'failed');
       failed++;
     }
   }
-  logActivity('movie_start', createdBy, `فيلم: ${movieName} — أُرسل لـ ${sent}/${members.length}`);
+  await logActivity('movie_start', createdBy, `فيلم: ${movieName} — أُرسل لـ ${sent}/${members.length}`);
   return { sessionId, sent, failed, total: members.length };
 }
 
 // ============================================================
-// Unified draft panel (ephemeral)
+// Unified draft panel
 // ============================================================
-function buildUnifiedPanel(sessionId: number, userId: string): ContainerBuilder {
-  const draft = getMovieDraft(userId, sessionId);
-  const session = getMovieSession(sessionId);
+async function buildUnifiedPanel(sessionId: number, userId: string): Promise<ContainerBuilder> {
+  const draft = await getMovieDraft(userId, sessionId);
+  const session = await getMovieSession(sessionId);
   const rating = draft?.rating && draft.rating > 0 ? draft.rating : null;
   const comment = draft?.comment ?? null;
   const movieName = session?.movie_name ?? 'Unknown';
@@ -640,7 +626,6 @@ function buildUnifiedPanel(sessionId: number, userId: string): ContainerBuilder 
       `# ${getText('movie_night.draft.title', { movie: movieName }, `🎬 ${movieName}`)}`,
     ),
   );
-
   container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
 
   const starsLine = rating ? starString(rating) : '— لم تختر بعد —';
@@ -655,7 +640,6 @@ function buildUnifiedPanel(sessionId: number, userId: string): ContainerBuilder 
       getText('movie_night.draft.helper', {}, 'اختر عدد النجوم، أضف تعليقًا (اختياري)، ثم اضغط **إرسال**.'),
     ),
   );
-
   container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
 
   const opts = [1, 2, 3, 4, 5].map((n) =>
@@ -694,7 +678,7 @@ function buildUnifiedPanel(sessionId: number, userId: string): ContainerBuilder 
 
 async function handleStart(interaction: ButtonInteraction): Promise<void> {
   const sessionId = parseSessionId(interaction.customId);
-  const session = getMovieSession(sessionId);
+  const session = await getMovieSession(sessionId);
 
   if (!session) {
     await interaction.reply({ content: '❌ الجلسة غير موجودة.', flags: MessageFlags.Ephemeral });
@@ -704,19 +688,19 @@ async function handleStart(interaction: ButtonInteraction): Promise<void> {
     await interaction.reply({ content: '🔒 الجلسة أُغلقت.', flags: MessageFlags.Ephemeral });
     return;
   }
-  if (!isMovieRecipient(sessionId, interaction.user.id)) {
+  if (!await isMovieRecipient(sessionId, interaction.user.id)) {
     await interaction.reply({ content: '❌ لست مشاركًا مؤهلًا.', flags: MessageFlags.Ephemeral });
     return;
   }
-  const existing = getMovieRatingFull(sessionId, interaction.user.id);
+  const existing = await getMovieRatingFull(sessionId, interaction.user.id);
   if ((existing?.rating ?? 0) > 0) {
     await interaction.reply({ content: '⚠️ قيّمت هذا الفيلم بالفعل.', flags: MessageFlags.Ephemeral });
     return;
   }
 
-  upsertMovieDraft(interaction.user.id, sessionId, {});
+  await upsertMovieDraft(interaction.user.id, sessionId, {});
 
-  const container = buildUnifiedPanel(sessionId, interaction.user.id);
+  const container = await buildUnifiedPanel(sessionId, interaction.user.id);
   await interaction.reply({
     components: [container],
     flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
@@ -726,7 +710,7 @@ async function handleStart(interaction: ButtonInteraction): Promise<void> {
 
 async function handleStarsSelect(interaction: StringSelectMenuInteraction): Promise<void> {
   const sessionId = parseSessionId(interaction.customId);
-  const session = getMovieSession(sessionId);
+  const session = await getMovieSession(sessionId);
 
   if (!session || session.status !== 'open') {
     await interaction.reply({ content: '🔒 الجلسة مغلقة.', flags: MessageFlags.Ephemeral });
@@ -739,9 +723,9 @@ async function handleStarsSelect(interaction: StringSelectMenuInteraction): Prom
     return;
   }
 
-  upsertMovieDraft(interaction.user.id, sessionId, { rating });
+  await upsertMovieDraft(interaction.user.id, sessionId, { rating });
 
-  const container = buildUnifiedPanel(sessionId, interaction.user.id);
+  const container = await buildUnifiedPanel(sessionId, interaction.user.id);
   await interaction.update({
     components: [container],
     flags: MessageFlags.IsComponentsV2,
@@ -751,14 +735,14 @@ async function handleStarsSelect(interaction: StringSelectMenuInteraction): Prom
 
 async function handleCommentButton(interaction: ButtonInteraction): Promise<void> {
   const sessionId = parseSessionId(interaction.customId);
-  const session = getMovieSession(sessionId);
+  const session = await getMovieSession(sessionId);
 
   if (!session || session.status !== 'open') {
     await interaction.reply({ content: '🔒 الجلسة مغلقة.', flags: MessageFlags.Ephemeral });
     return;
   }
 
-  const draft = getMovieDraft(interaction.user.id, sessionId);
+  const draft = await getMovieDraft(interaction.user.id, sessionId);
 
   const modal = new ModalBuilder()
     .setCustomId(`movie:unified:commentmodal:${sessionId}`)
@@ -779,7 +763,7 @@ async function handleCommentButton(interaction: ButtonInteraction): Promise<void
 
 async function handleCommentModal(interaction: any): Promise<void> {
   const sessionId = parseSessionId(interaction.customId);
-  const session = getMovieSession(sessionId);
+  const session = await getMovieSession(sessionId);
 
   if (!session || session.status !== 'open') {
     await interaction.reply({ content: '🔒 الجلسة مغلقة.', flags: MessageFlags.Ephemeral });
@@ -787,7 +771,7 @@ async function handleCommentModal(interaction: any): Promise<void> {
   }
 
   const comment = (interaction.fields.getTextInputValue('comment') ?? '').trim().slice(0, 800);
-  upsertMovieDraft(interaction.user.id, sessionId, { comment: comment || null });
+  await upsertMovieDraft(interaction.user.id, sessionId, { comment: comment || null });
 
   await interaction.reply({
     content: comment ? '✅ تم حفظ التعليق.' : 'ℹ️ لم تكتب تعليقًا.',
@@ -795,12 +779,9 @@ async function handleCommentModal(interaction: any): Promise<void> {
   });
 }
 
-// ============================================================
-// ✅ FIXED handleSubmit — shows thanks card WITHOUT being reverted
-// ============================================================
 async function handleSubmit(interaction: ButtonInteraction): Promise<void> {
   const sessionId = parseSessionId(interaction.customId);
-  const session = getMovieSession(sessionId);
+  const session = await getMovieSession(sessionId);
 
   if (!session) {
     await interaction.reply({ content: '❌ الجلسة غير موجودة.', flags: MessageFlags.Ephemeral });
@@ -810,19 +791,19 @@ async function handleSubmit(interaction: ButtonInteraction): Promise<void> {
     await interaction.reply({ content: '🔒 الجلسة أُغلقت.', flags: MessageFlags.Ephemeral });
     return;
   }
-  if (!isMovieRecipient(sessionId, interaction.user.id)) {
+  if (!await isMovieRecipient(sessionId, interaction.user.id)) {
     await interaction.reply({ content: '❌ لست مشاركًا مؤهلًا.', flags: MessageFlags.Ephemeral });
     return;
   }
 
-  const existing = getMovieRatingFull(sessionId, interaction.user.id);
+  const existing = await getMovieRatingFull(sessionId, interaction.user.id);
   if ((existing?.rating ?? 0) > 0) {
     await interaction.reply({ content: '⚠️ قيّمت الفيلم بالفعل.', flags: MessageFlags.Ephemeral });
-    deleteMovieDraft(interaction.user.id, sessionId);
+    await deleteMovieDraft(interaction.user.id, sessionId);
     return;
   }
 
-  const draft = getMovieDraft(interaction.user.id, sessionId);
+  const draft = await getMovieDraft(interaction.user.id, sessionId);
   if (!draft || draft.rating < 1 || draft.rating > 5) {
     await interaction.reply({ content: '❌ اختر تقييمًا أولًا.', flags: MessageFlags.Ephemeral });
     return;
@@ -831,30 +812,25 @@ async function handleSubmit(interaction: ButtonInteraction): Promise<void> {
   const rating = draft.rating;
   const comment = draft.comment;
 
-  // 1. Save rating
-  upsertMovieRating(sessionId, interaction.user.id, rating, comment);
-  logActivity('movie_rating', interaction.user.id, `فيلم ${session.movie_name}: ${rating}/5`);
-  deleteMovieDraft(interaction.user.id, sessionId);
+  await upsertMovieRating(sessionId, interaction.user.id, rating, comment);
+  await logActivity('movie_rating', interaction.user.id, `فيلم ${session.movie_name}: ${rating}/5`);
+  await deleteMovieDraft(interaction.user.id, sessionId);
 
-  // 2. Post to thread FIRST
   let reviewMessageId: string | null = null;
   if (botClient) {
     reviewMessageId = await postReviewToThread(botClient, sessionId, interaction.user.id, rating, comment);
-    if (reviewMessageId) setReviewMessageId(sessionId, interaction.user.id, reviewMessageId);
+    if (reviewMessageId) await setReviewMessageId(sessionId, interaction.user.id, reviewMessageId);
   }
 
-  // 3. Build review URL
   const threadId = session.thread_id;
   const reviewUrl = (threadId && reviewMessageId)
     ? `https://discord.com/channels/${config.guildId}/${threadId}/${reviewMessageId}`
     : null;
 
-  // 4. Build thanks card
   const { container, files } = buildThanksCard(session.movie_name, rating, reviewUrl);
 
   console.log(`[Blade X][movie] ✅ handleSubmit: files=${files.length} hasImage=${files.length > 0}`);
 
-  // 5. Update the ephemeral message
   const updatePayload: any = {
     components: [container],
     flags: MessageFlags.IsComponentsV2,
@@ -873,10 +849,6 @@ async function handleSubmit(interaction: ButtonInteraction): Promise<void> {
     }).catch(() => {});
   }
 
-  // 6. Side effects — updateSummary only, NO refreshUserDM
-  // ✅ FIXED: removed refreshUserDM call — it was reverting the thanks card
-  //           back to start card because comment_posted was 0.
-  //           The interaction.update above already shows the thanks card.
   if (botClient) {
     await updateSummary(botClient, sessionId);
   }
@@ -886,11 +858,11 @@ async function handleSubmit(interaction: ButtonInteraction): Promise<void> {
 // Close session
 // ============================================================
 export async function closeMovieSession(sessionId: number): Promise<boolean> {
-  const session = getMovieSession(sessionId);
+  const session = await getMovieSession(sessionId);
   if (!session || session.status !== 'open') return false;
 
-  updateMovieSession(sessionId, { status: 'closed', closed_at: Date.now() });
-  logActivity('movie_close', null, `فيلم: ${session.movie_name} أُغلق`);
+  await updateMovieSession(sessionId, { status: 'closed', closed_at: Date.now() });
+  await logActivity('movie_close', null, `فيلم: ${session.movie_name} أُغلق`);
 
   const c = botClient;
   if (c) {
@@ -914,7 +886,7 @@ export async function closeMovieSession(sessionId: number): Promise<boolean> {
             if (linePath) {
               const att = new AttachmentBuilder(linePath, { name: 'line.png' });
               await ch.send({ files: [att], allowedMentions: { parse: [] } });
-              updateMovieSession(sessionId, { separator_sent: 1 });
+              await updateMovieSession(sessionId, { separator_sent: 1 });
             }
           }
         } catch (e) { console.error('[Blade X] ❌ فشل إرسال الفاصل:', e); }
@@ -932,18 +904,18 @@ export function registerThreadCommentListener(c: Client): void {
     if (message.author.bot) return;
     if (!message.guild) return;
     if (!message.channel.isThread()) return;
-    const session = getActiveMovieSession();
+    const session = await getActiveMovieSession();
     if (!session) return;
     if (message.channel.id !== session.thread_id) return;
-    if (!isMovieRecipient(session.id, message.author.id)) return;
-    const rating = getMovieRatingFull(session.id, message.author.id);
+    if (!await isMovieRecipient(session.id, message.author.id)) return;
+    const rating = await getMovieRatingFull(session.id, message.author.id);
     if (rating?.comment && rating.comment_posted) return;
     if ((rating?.rating ?? 0) > 0) return;
 
     const content = message.content.trim().slice(0, 800);
     if (!content) return;
-    setCommentOnly(session.id, message.author.id, content);
-    logActivity('movie_comment', message.author.id, session.movie_name);
+    await setCommentOnly(session.id, message.author.id, content);
+    await logActivity('movie_comment', message.author.id, session.movie_name);
     try { await message.react(getEmoji('success', '✅')); } catch { /* ignore */ }
     await updateSummary(c, session.id);
     await refreshUserDM(session.id, message.author.id);

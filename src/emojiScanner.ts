@@ -1,11 +1,10 @@
+// ============================================================
+// Blade X — Global Emoji Scanner (v5 — Turso)
+// ============================================================
 import fs from 'node:fs';
 import path from 'node:path';
-import db from './database.js';
+import { dbClient } from './database.js';
 import { config } from './config.js';
-
-// ============================================================
-// Blade X — Global Emoji Scanner
-// ============================================================
 
 export type EmojiType = 'unicode' | 'custom';
 export type UsageKind = 'file' | 'settings' | 'registry' | 'table';
@@ -156,17 +155,20 @@ function scanFiles(): { usages: Map<string, EmojiUsage>; filesScanned: number; e
   return { usages, filesScanned, errors };
 }
 
-function scanDb(): { usages: Map<string, EmojiUsage>; errors: string[] } {
+async function scanDb(): Promise<{ usages: Map<string, EmojiUsage>; errors: string[] }> {
   const usages = new Map<string, EmojiUsage>();
   const errors: string[] = [];
 
+  // ===== settings =====
   try {
-    const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
-    for (const row of rows) {
-      if (!row.value) continue;
-      const extracted = extractFromText(row.value, `settings.${row.key}`, 'settings');
+    const result = await dbClient.execute('SELECT key, value FROM settings');
+    for (const row of result.rows) {
+      const key = String(row.key);
+      const value = row.value != null ? String(row.value) : '';
+      if (!value) continue;
+      const extracted = extractFromText(value, `settings.${key}`, 'settings');
       for (const [, u] of extracted) {
-        for (const s of u.sources) s.context = row.value.slice(0, 80);
+        for (const s of u.sources) s.context = value.slice(0, 80);
       }
       mergeUsage(usages, extracted);
     }
@@ -174,13 +176,16 @@ function scanDb(): { usages: Map<string, EmojiUsage>; errors: string[] } {
     errors.push(`settings scan failed: ${e?.message ?? 'unknown'}`);
   }
 
+  // ===== emoji_registry =====
   try {
-    const rows = db.prepare('SELECT key, value FROM emoji_registry').all() as { key: string; value: string }[];
-    for (const row of rows) {
-      if (!row.value) continue;
-      const extracted = extractFromText(row.value, `emoji_registry.${row.key}`, 'registry');
+    const result = await dbClient.execute('SELECT key, value FROM emoji_registry');
+    for (const row of result.rows) {
+      const key = String(row.key);
+      const value = row.value != null ? String(row.value) : '';
+      if (!value) continue;
+      const extracted = extractFromText(value, `emoji_registry.${key}`, 'registry');
       for (const [, u] of extracted) {
-        for (const s of u.sources) s.context = row.value.slice(0, 80);
+        for (const s of u.sources) s.context = value.slice(0, 80);
       }
       mergeUsage(usages, extracted);
     }
@@ -188,17 +193,19 @@ function scanDb(): { usages: Map<string, EmojiUsage>; errors: string[] } {
     errors.push(`emoji_registry scan failed: ${e?.message ?? 'unknown'}`);
   }
 
+  // ===== media_channels =====
   try {
-    const rows = db.prepare('SELECT * FROM media_channels').all() as any[];
+    const result = await dbClient.execute('SELECT * FROM media_channels');
     const fields = [
       'title_format', 'author_emoji', 'reaction_emoji', 'comment_emoji',
       'delete_emoji', 'viewall_emoji', 'footer_from_label', 'footer_others_label',
     ];
-    for (const row of rows) {
+    for (const row of result.rows) {
+      const channelId = String(row.channel_id ?? '');
       for (const field of fields) {
         const val = row[field];
         if (typeof val !== 'string' || !val) continue;
-        const loc = `media_channels[${row.channel_id}].${field}`;
+        const loc = `media_channels[${channelId}].${field}`;
         const extracted = extractFromText(val, loc, 'table');
         for (const [, u] of extracted) {
           for (const s of u.sources) s.context = val.slice(0, 80);
@@ -210,29 +217,31 @@ function scanDb(): { usages: Map<string, EmojiUsage>; errors: string[] } {
     errors.push(`media_channels scan failed: ${e?.message ?? 'unknown'}`);
   }
 
+  // ===== self_roles (needs Discord cache) =====
   try {
     const client = (globalThis as any).__bladeClient;
     const guild = client?.guilds?.cache?.get(config.guildId);
-    const rows = db
-      .prepare('SELECT id, label, emoji_id FROM self_roles')
-      .all() as { id: number; label: string; emoji_id: string | null }[];
+    const result = await dbClient.execute('SELECT id, label, emoji_id FROM self_roles');
 
-    for (const row of rows) {
-      if (!row.emoji_id) continue;
-      if (!/^\d{17,20}$/.test(row.emoji_id)) continue;
+    for (const row of result.rows) {
+      const id = Number(row.id);
+      const label = String(row.label ?? '');
+      const emojiId = row.emoji_id != null ? String(row.emoji_id) : '';
+      if (!emojiId) continue;
+      if (!/^\d{17,20}$/.test(emojiId)) continue;
       if (!guild) continue;
 
-      const e = guild.emojis.cache.get(row.emoji_id);
+      const e = guild.emojis.cache.get(emojiId);
       if (!e) continue;
 
       const raw = `<${e.animated ? 'a' : ''}:${e.name}:${e.id}>`;
-      const loc = `self_roles[${row.id}]`;
+      const loc = `self_roles[${id}]`;
       const existing = usages.get(raw);
 
       if (existing) {
         existing.count += 1;
         if (!existing.sources.some((s) => s.location === loc)) {
-          existing.sources.push({ kind: 'table', location: loc, context: row.label });
+          existing.sources.push({ kind: 'table', location: loc, context: label });
         }
       } else {
         usages.set(raw, {
@@ -241,7 +250,7 @@ function scanDb(): { usages: Map<string, EmojiUsage>; errors: string[] } {
           name: e.name,
           id: e.id,
           animated: e.animated ?? false,
-          sources: [{ kind: 'table', location: loc, context: row.label }],
+          sources: [{ kind: 'table', location: loc, context: label }],
           count: 1,
         });
       }
@@ -257,14 +266,14 @@ let cachedReport: ScanReport | null = null;
 let cacheTime = 0;
 const CACHE_MS = 60_000;
 
-export function runEmojiScan(force = false): ScanReport {
+export async function runEmojiScan(force = false): Promise<ScanReport> {
   const now = Date.now();
   if (!force && cachedReport && now - cacheTime < CACHE_MS) {
     return cachedReport;
   }
 
   const fileResult = scanFiles();
-  const dbResult = scanDb();
+  const dbResult = await scanDb();
 
   const usages = new Map<string, EmojiUsage>();
   mergeUsage(usages, fileResult.usages);

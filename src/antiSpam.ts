@@ -1,3 +1,6 @@
+// ============================================================
+// Blade X — Anti-Spam (v5 — Turso)
+// ============================================================
 import {
   Client, Events, Message, TextChannel, PermissionFlagsBits, Guild,
 } from 'discord.js';
@@ -101,9 +104,8 @@ async function deleteSessionMessages(
       chFailed = msgs.length;
       totalFailed += chFailed;
       perChannel.set(channelId, { deleted: 0, failed: chFailed });
-      // سجّل الفشل في الجلسة
       for (const m of msgs) {
-        addSpamSessionMessage(sessionId, m.id, channelId, m.timestamp);
+        await addSpamSessionMessage(sessionId, m.id, channelId, m.timestamp);
       }
       continue;
     }
@@ -115,7 +117,7 @@ async function deleteSessionMessages(
       totalFailed += chFailed;
       perChannel.set(channelId, { deleted: 0, failed: chFailed });
       for (const m of msgs) {
-        addSpamSessionMessage(sessionId, m.id, channelId, m.timestamp);
+        await addSpamSessionMessage(sessionId, m.id, channelId, m.timestamp);
       }
       continue;
     }
@@ -158,7 +160,7 @@ async function deleteSessionMessages(
     perChannel.set(channelId, { deleted: chDeleted, failed: chFailed });
 
     for (const m of msgs) {
-      addSpamSessionMessage(sessionId, m.id, channelId, m.timestamp);
+      await addSpamSessionMessage(sessionId, m.id, channelId, m.timestamp);
     }
   }
 
@@ -247,7 +249,7 @@ export function registerAntiSpam(client: Client): void {
     // ===== إنشاء Spam Session =====
     let sessionId: number | null = null;
     if (cfg.trackSessions) {
-      sessionId = createSpamSession({
+      sessionId = await createSpamSession({
         guild_id: guild.id,
         user_id: userId,
         violation_type: violationType,
@@ -371,7 +373,7 @@ export function registerAntiSpam(client: Client): void {
         : deleteResult.deleted > 0
           ? 'partial'
           : 'failed';
-      updateSpamSession(sessionId, {
+      await updateSpamSession(sessionId, {
         deleted_count: deleteResult.deleted,
         failed_count: deleteResult.failed,
         status,
@@ -380,8 +382,8 @@ export function registerAntiSpam(client: Client): void {
       });
     }
 
-    logModeration(`antispam_${punishmentValue}`, member.id, null, violation, cfg.timeoutMs, dmStatus);
-    logActivity('antispam', member.id, `${violationType}: ${violation} | حُذف ${deleteResult.deleted}/${sessionMessages.length}`);
+    await logModeration(`antispam_${punishmentValue}`, member.id, null, violation, cfg.timeoutMs, dmStatus);
+    await logActivity('antispam', member.id, `${violationType}: ${violation} | حُذف ${deleteResult.deleted}/${sessionMessages.length}`);
 
     // ===== Log =====
     if (cfg.logChannelId) {

@@ -1,17 +1,17 @@
+// ============================================================
+// Blade X — Components V2 Conversion (v5 — Turso)
+// ============================================================
 import {
   Client, ChatInputCommandInteraction, SlashCommandBuilder,
   PermissionFlagsBits, MessageFlags, EmbedBuilder, TextChannel,
-  ChannelType, Message, ActionRowBuilder, ButtonBuilder, ButtonStyle,
+  ChannelType, Message,
 } from 'discord.js';
 import { config } from './config.js';
 import { getSetting, upsertCv2Job, getCv2Job, listCv2Jobs } from './database.js';
 import { getEmoji } from './emojiRegistry.js';
-import { discordTime } from './utils.js';
 
-// ⚠️ تفعيل التحويل الفعلي متعطّل افتراضيًا
 const ALLOW_CONVERT = process.env.ALLOW_COMPONENTS_V2_CONVERT === 'true';
 
-// ===== قائمة اللوحات المعروفة =====
 interface PanelEntry {
   type: string;
   settingKey: string;
@@ -36,7 +36,6 @@ interface ScanResult {
   reason: string;
 }
 
-// ===== فحص لوحة =====
 async function scanPanel(client: Client, entry: PanelEntry): Promise<ScanResult> {
   const messageId = getSetting(entry.settingKey);
   if (!messageId) {
@@ -47,7 +46,7 @@ async function scanPanel(client: Client, entry: PanelEntry): Promise<ScanResult>
     };
   }
 
-  const job = getCv2Job(messageId);
+  const job = await getCv2Job(messageId);
   if (job?.status === 'converted') {
     return {
       type: entry.type, label: entry.label, messageId, channelId: job.channel_id,
@@ -61,7 +60,6 @@ async function scanPanel(client: Client, entry: PanelEntry): Promise<ScanResult>
     return { type: entry.type, label: entry.label, messageId, channelId: null, found: false, alreadyConverted: false, convertible: false, reason: 'السيرفر غير موجود' };
   }
 
-  // ابحث في القنوات
   let found: Message | null = null;
   let channelId: string | null = null;
   for (const ch of guild.channels.cache.values()) {
@@ -80,7 +78,6 @@ async function scanPanel(client: Client, entry: PanelEntry): Promise<ScanResult>
     };
   }
 
-  // فحص المحتوى
   const hasEmbed = found.embeds.length > 0;
   const hasComponents = found.components.length > 0;
   if (!hasEmbed && !hasComponents) {
@@ -91,7 +88,6 @@ async function scanPanel(client: Client, entry: PanelEntry): Promise<ScanResult>
     };
   }
 
-  // تحقق من عدم وجود Polls
   if ((found as any).poll) {
     return {
       type: entry.type, label: entry.label, messageId, channelId,
@@ -107,7 +103,6 @@ async function scanPanel(client: Client, entry: PanelEntry): Promise<ScanResult>
   };
 }
 
-// ===== الأوامر =====
 export const componentsV2Command = new SlashCommandBuilder()
   .setName('componentsv2')
   .setDescription('أدوات تحويل رسائل البوت إلى Components V2')
@@ -187,7 +182,7 @@ export async function handleComponentsV2(interaction: ChatInputCommandInteractio
   }
 
   if (sub === 'status') {
-    const jobs = listCv2Jobs(config.guildId);
+    const jobs = await listCv2Jobs(config.guildId);
     const stats = {
       pending: jobs.filter(j => j.status === 'pending').length,
       converted: jobs.filter(j => j.status === 'converted').length,
@@ -243,15 +238,13 @@ export async function handleComponentsV2(interaction: ChatInputCommandInteractio
       return;
     }
 
-    let converted = 0, failed = 0;
+    let failed = 0;
     const errors: string[] = [];
 
     for (const r of convertibles) {
       if (!r.messageId || !r.channelId) continue;
       try {
-        // ⚠️ التحويل الفعلي يحتاج تطبيق مكونات V2 لكل نوع لوحة بشكل مخصص.
-        // حاليًا نُسجّل job بحالة pending ونعرض للمستخدم أن التنفيذ الكامل يتطلب تفعيله يدويًا.
-        upsertCv2Job({
+        await upsertCv2Job({
           guild_id: config.guildId,
           panel_type: r.type,
           channel_id: r.channelId,
@@ -272,7 +265,7 @@ export async function handleComponentsV2(interaction: ChatInputCommandInteractio
       .setTitle(`${getEmoji('warning', '⚠️')} Components V2 — Conversion Report`)
       .setDescription(
         `تم تشغيل التحويل.\n\n` +
-        `**✅ نجح:** ${converted}\n**⚠️ يحتاج تدخل يدوي:** ${failed}\n\n` +
+        `**✅ نجح:** 0\n**⚠️ يحتاج تدخل يدوي:** ${failed}\n\n` +
         `**لماذا لم يتم التحويل تلقائيًا؟**\n` +
         `كل لوحة لها بنية Embeds مختلفة (Welcome, Self Roles, Support, Movie Night). ` +
         `التحويل التلقائي قد يفقد معلومات أو يكسر أزرارًا.\n\n` +

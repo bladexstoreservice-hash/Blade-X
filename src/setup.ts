@@ -1,3 +1,6 @@
+// ============================================================
+// Blade X — Setup command (v5 — Turso)
+// ============================================================
 import {
   ChatInputCommandInteraction,
   PermissionFlagsBits,
@@ -165,8 +168,8 @@ export async function handleSetup(interaction: ChatInputCommandInteraction): Pro
     switch (sub) {
       case 'welcome': {
         const channel = interaction.options.getChannel('channel', true);
-        setSetting('welcome_channel_id', channel.id);
-        setSetting('welcome_enabled', 'true');
+        await setSetting('welcome_channel_id', channel.id);
+        await setSetting('welcome_enabled', 'true');
         await interaction.reply({
           content: `✅ تم ضبط قناة الترحيب على <#${channel.id}>\n✅ تم تفعيل نظام الترحيب تلقائيًا.`,
           flags: MessageFlags.Ephemeral,
@@ -185,8 +188,8 @@ export async function handleSetup(interaction: ChatInputCommandInteraction): Pro
           await interaction.reply({ content: `❌ لم أجد قناة بالمعرف \`${id}\`.`, flags: MessageFlags.Ephemeral });
           return;
         }
-        setSetting('welcome_channel_id', id);
-        setSetting('welcome_enabled', 'true');
+        await setSetting('welcome_channel_id', id);
+        await setSetting('welcome_enabled', 'true');
         await interaction.reply({
           content: `✅ تم ضبط قناة الترحيب على <#${id}>`,
           flags: MessageFlags.Ephemeral,
@@ -196,7 +199,7 @@ export async function handleSetup(interaction: ChatInputCommandInteraction): Pro
 
       case 'welcome-toggle': {
         const enabled = interaction.options.getBoolean('enabled', true);
-        setSetting('welcome_enabled', enabled ? 'true' : 'false');
+        await setSetting('welcome_enabled', enabled ? 'true' : 'false');
         await interaction.reply({
           content: `${enabled ? '✅ تم تفعيل' : '⏸️ تم إيقاف'} نظام الترحيب.`,
           flags: MessageFlags.Ephemeral,
@@ -212,7 +215,7 @@ export async function handleSetup(interaction: ChatInputCommandInteraction): Pro
           await interaction.reply({ content: '❌ نوع لوج غير معروف.', flags: MessageFlags.Ephemeral });
           return;
         }
-        setSetting(key, channel.id);
+        await setSetting(key, channel.id);
         await interaction.reply({
           content: `✅ تم ضبط لوج **${type}** على <#${channel.id}>`,
           flags: MessageFlags.Ephemeral,
@@ -227,7 +230,7 @@ export async function handleSetup(interaction: ChatInputCommandInteraction): Pro
           await interaction.reply({ content: '❌ نوع لوج غير معروف.', flags: MessageFlags.Ephemeral });
           return;
         }
-        setSetting(key, '');
+        await setSetting(key, '');
         await interaction.reply({
           content: `⏸️ تم إيقاف لوج **${type}**`,
           flags: MessageFlags.Ephemeral,
@@ -237,7 +240,7 @@ export async function handleSetup(interaction: ChatInputCommandInteraction): Pro
 
       case 'selfroles': {
         const channel = interaction.options.getChannel('channel', true);
-        setSetting('self_roles_channel_id', channel.id);
+        await setSetting('self_roles_channel_id', channel.id);
         await interaction.reply({
           content: `✅ تم ضبط قناة الرولات على <#${channel.id}>\n💡 شغّل \`/role-panel publish\` لنشر اللوحة.`,
           flags: MessageFlags.Ephemeral,
@@ -247,7 +250,7 @@ export async function handleSetup(interaction: ChatInputCommandInteraction): Pro
 
       case 'movie-voice': {
         const ch = interaction.options.getChannel('channel', true);
-        setSetting('movie_voice_channel_id', ch.id);
+        await setSetting('movie_voice_channel_id', ch.id);
         await interaction.reply({
           content: `✅ تم ضبط قناة السينما الصوتية على <#${ch.id}>`,
           flags: MessageFlags.Ephemeral,
@@ -257,7 +260,7 @@ export async function handleSetup(interaction: ChatInputCommandInteraction): Pro
 
       case 'movie-reviews': {
         const ch = interaction.options.getChannel('channel', true);
-        setSetting('movie_reviews_channel_id', ch.id);
+        await setSetting('movie_reviews_channel_id', ch.id);
         await interaction.reply({
           content: `✅ تم ضبط قناة المراجعات النصية على <#${ch.id}>`,
           flags: MessageFlags.Ephemeral,
@@ -285,7 +288,7 @@ export async function handleSetup(interaction: ChatInputCommandInteraction): Pro
         else if (section === 'selfroles') keys = roleKeys;
         else if (section === 'movie') keys = movieKeys;
 
-        for (const k of keys) setSetting(k, '');
+        for (const k of keys) await setSetting(k, '');
         await interaction.reply({
           content: `✅ تم إعادة تعيين: **${section}** (${keys.length} إعداد)`,
           flags: MessageFlags.Ephemeral,

@@ -1,3 +1,6 @@
+// ============================================================
+// Blade X — Utility Commands (v5 — Turso)
+// ============================================================
 import {
   ChatInputCommandInteraction,
   SlashCommandBuilder,
@@ -11,7 +14,7 @@ import {
 } from 'discord.js';
 import { bladeEmbed, discordTime, BLADE_COLOR } from './utils.js';
 import { config } from './config.js';
-import db, { logActivity, logModeration } from './database.js';
+import { logActivity, logModeration, dbClient } from './database.js';
 
 const startTime = Date.now();
 
@@ -127,7 +130,6 @@ export const utilityCommands = [
     .setDescription('اختبار صورة الترحيب في القناة الحالية')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
-  // ===== Movie Night Review =====
   new SlashCommandBuilder()
     .setName('movie-review')
     .setDescription('إدارة Movie Night Review')
@@ -294,8 +296,8 @@ export async function handleUtilityCommand(interaction: ChatInputCommandInteract
       case 'warn': {
         const member = interaction.options.getMember('member') as GuildMember;
         const reason = interaction.options.getString('reason', true);
-        logModeration('warn', member.id, interaction.user.id, reason, null, 'n/a');
-        logActivity('warn', member.id, reason);
+        await logModeration('warn', member.id, interaction.user.id, reason, null, 'n/a');
+        await logActivity('warn', member.id, reason);
         const { getModerationEmbed } = await import('./utils.js');
         const dm = getModerationEmbed('Warn', member.user, interaction.user, reason, null, interaction.guild!.name);
         try { await member.send({ embeds: [dm] }); } catch { /* ignore */ }
@@ -308,11 +310,15 @@ export async function handleUtilityCommand(interaction: ChatInputCommandInteract
 
       case 'warnings': {
         const member = interaction.options.getMember('member') as GuildMember;
-        const rows = db
-          .prepare(
-            "SELECT reason, moderator_id, created_at FROM moderation_log WHERE action='warn' AND target_id=? ORDER BY created_at DESC LIMIT 25"
-          )
-          .all(member.id) as { reason: string | null; moderator_id: string | null; created_at: number }[];
+        const result = await dbClient.execute({
+          sql: "SELECT reason, moderator_id, created_at FROM moderation_log WHERE action='warn' AND target_id=? ORDER BY created_at DESC LIMIT 25",
+          args: [member.id],
+        });
+        const rows = result.rows.map((r) => ({
+          reason: r.reason != null ? String(r.reason) : null,
+          moderator_id: r.moderator_id != null ? String(r.moderator_id) : null,
+          created_at: Number(r.created_at ?? 0),
+        }));
         if (rows.length === 0) {
           await interaction.reply({ content: `✅ لا توجد تحذيرات لـ ${member}.`, flags: MessageFlags.Ephemeral });
           return true;
@@ -331,9 +337,12 @@ export async function handleUtilityCommand(interaction: ChatInputCommandInteract
 
       case 'clear-warnings': {
         const member = interaction.options.getMember('member') as GuildMember;
-        const result = db.prepare("DELETE FROM moderation_log WHERE action='warn' AND target_id=?").run(member.id);
+        const result = await dbClient.execute({
+          sql: "DELETE FROM moderation_log WHERE action='warn' AND target_id=?",
+          args: [member.id],
+        });
         await interaction.reply({
-          content: `✅ تم مسح ${result.changes} تحذير لـ ${member}.`,
+          content: `✅ تم مسح ${result.rowsAffected} تحذير لـ ${member}.`,
           flags: MessageFlags.Ephemeral,
         });
         return true;
@@ -446,7 +455,7 @@ export async function handleUtilityCommand(interaction: ChatInputCommandInteract
         }
 
         if (sub === 'close') {
-          const s = getActiveMovieSession();
+          const s = await getActiveMovieSession();
           if (!s) {
             await interaction.reply({ content: '⚠️ لا توجد جلسة مفتوحة.', flags: MessageFlags.Ephemeral });
             return true;
@@ -457,13 +466,13 @@ export async function handleUtilityCommand(interaction: ChatInputCommandInteract
         }
 
         if (sub === 'status') {
-          const s = getActiveMovieSession();
+          const s = await getActiveMovieSession();
           if (!s) {
             await interaction.reply({ content: '⚠️ لا توجد جلسة مفتوحة.', flags: MessageFlags.Ephemeral });
             return true;
           }
-          const stats = getMovieStats(s.id);
-          const recipients = getMovieRecipients(s.id);
+          const stats = await getMovieStats(s.id);
+          const recipients = await getMovieRecipients(s.id);
           const embed = bladeEmbed(`🎬 Movie Night — ${s.movie_name}`).addFields(
             { name: 'الحالة', value: s.status, inline: true },
             { name: 'المستلمون', value: `${recipients.length}`, inline: true },
