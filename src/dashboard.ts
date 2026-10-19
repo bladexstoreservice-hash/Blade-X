@@ -42,6 +42,7 @@ import { getStorageUsage } from './mediaStorage.js';
 import { invalidateMediaEmojiCache } from './mediaShow.js';
 
 const app = express();
+app.set('trust proxy', 1);
 
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: '200kb' }));
