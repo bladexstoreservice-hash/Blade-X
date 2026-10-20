@@ -1958,7 +1958,7 @@ async function resetAllEmojis() {
 }
 
 // ============================================================
-// Message Builder
+// Message Builder (Classic + V2 Support)
 // ============================================================
 let builderState = { 
   mode: 'classic',
@@ -2141,24 +2141,98 @@ function renderBuilderV2() {
   }).join('');
 }
 
-// ===== PREVIEW =====
+// ===== CLASSIC FUNCTIONS (RESTORED) =====
+function mbUpdate(field, value) { builderState[field] = value; renderBuilderPreview(); }
+
+function mbAddEmbed() {
+  if (builderState.embeds.length >= 10) { toast('الحد الأقصى 10 Embeds', 'error'); return; }
+  builderState.embeds.push({ title: '', description: '', color: '#5865f2', fields: [], timestamp: false });
+  renderBuilderEmbeds(); renderBuilderPreview();
+}
+
+function mbRemoveEmbed(i) { builderState.embeds.splice(i, 1); renderBuilderEmbeds(); renderBuilderPreview(); }
+function mbUpdateEmbed(i, field, value) { builderState.embeds[i][field] = value; renderBuilderPreview(); }
+
+function mbAddField(i) {
+  if (!builderState.embeds[i].fields) builderState.embeds[i].fields = [];
+  if (builderState.embeds[i].fields.length >= 25) { toast('الحد الأقصى 25 حقل', 'error'); return; }
+  builderState.embeds[i].fields.push({ name: '', value: '', inline: false });
+  renderBuilderEmbeds(); renderBuilderPreview();
+}
+
+function mbUpdateField(i, j, field, value) { builderState.embeds[i].fields[j][field] = value; renderBuilderPreview(); }
+function mbRemoveField(i, j) { builderState.embeds[i].fields.splice(j, 1); renderBuilderEmbeds(); renderBuilderPreview(); }
+
+function renderBuilderEmbeds() {
+  const box = $('mb-embeds-list');
+  if (!box) return;
+  if (builderState.embeds.length === 0) { box.innerHTML = '<div class="empty" style="padding:14px">لا توجد Embeds</div>'; return; }
+  box.innerHTML = builderState.embeds.map((e, i) => `
+    <div class="panel" style="background:var(--bg-elev);margin-bottom:10px">
+      <div class="panel-header" style="margin-bottom:8px"><div class="panel-title" style="font-size:13px">Embed #${i+1}</div><button class="btn-danger" style="padding:4px 8px;font-size:12px" onclick="mbRemoveEmbed(${i})">✕</button></div>
+      <div class="form-row"><label>العنوان</label><input type="text" value="${escapeHtml(e.title||'')}" oninput="mbUpdateEmbed(${i},'title',this.value)"></div>
+      <div class="form-row"><label>الوصف</label><textarea rows="3" oninput="mbUpdateEmbed(${i},'description',this.value)">${escapeHtml(e.description||'')}</textarea></div>
+      <div class="form-grid">
+        <div class="form-row"><label>اللون</label><input type="color" value="${e.color||'#5865f2'}" oninput="mbUpdateEmbed(${i},'color',this.value)"></div>
+        <div class="form-row"><label>URL</label><input type="url" value="${escapeHtml(e.url||'')}" oninput="mbUpdateEmbed(${i},'url',this.value)"></div>
+      </div>
+      <div class="form-row"><label>Author name</label><input type="text" value="${escapeHtml(e.author?.name||'')}" oninput="mbUpdateEmbed(${i},'author',{name:this.value})"></div>
+      <div class="form-grid">
+        <div class="form-row"><label>Thumbnail URL</label><input type="url" value="${escapeHtml(e.thumbnail?.url||'')}" oninput="mbUpdateEmbed(${i},'thumbnail',{url:this.value})"></div>
+        <div class="form-row"><label>Image URL</label><input type="url" value="${escapeHtml(e.image?.url||'')}" oninput="mbUpdateEmbed(${i},'image',{url:this.value})"></div>
+      </div>
+      <div class="form-row"><label>Footer</label><input type="text" value="${escapeHtml(e.footer?.text||'')}" oninput="mbUpdateEmbed(${i},'footer',{text:this.value})"></div>
+      <div class="form-row"><label class="switch"><input type="checkbox" ${e.timestamp?'checked':''} onchange="mbUpdateEmbed(${i},'timestamp',this.checked)"><span class="track"></span><span class="label-text">Timestamp</span></label></div>
+      <div class="panel-header" style="margin:10px 0 6px"><div style="font-size:12px;color:var(--text-dim)">الحقول</div><button class="btn-secondary" style="padding:3px 8px;font-size:11px" onclick="mbAddField(${i})">+</button></div>
+      ${(e.fields||[]).map((f,j)=>`
+        <div class="form-grid" style="margin-bottom:6px">
+          <input type="text" placeholder="Name" value="${escapeHtml(f.name||'')}" oninput="mbUpdateField(${i},${j},'name',this.value)">
+          <input type="text" placeholder="Value" value="${escapeHtml(f.value||'')}" oninput="mbUpdateField(${i},${j},'value',this.value)">
+          <label class="switch" style="font-size:12px"><input type="checkbox" ${f.inline?'checked':''} onchange="mbUpdateField(${i},${j},'inline',this.checked)"><span class="track"></span><span class="label-text">inline</span></label>
+          <button class="btn-danger" style="padding:4px 8px;font-size:11px" onclick="mbRemoveField(${i},${j})">✕</button>
+        </div>`).join('')}
+    </div>`).join('');
+}
+
+function mbAddButton() {
+  if (builderState.buttons.length >= 25) { toast('الحد الأقصى 25 زر', 'error'); return; }
+  builderState.buttons.push({ type: 'secondary', label: 'زر', emoji: '', url: '' });
+  renderBuilderButtons(); renderBuilderPreview();
+}
+
+function mbUpdateButton(i, field, value) { builderState.buttons[i][field] = value; renderBuilderPreview(); }
+function mbRemoveButton(i) { builderState.buttons.splice(i, 1); renderBuilderButtons(); renderBuilderPreview(); }
+
+function renderBuilderButtons() {
+  const box = $('mb-buttons-list');
+  if (!box) return;
+  if (builderState.buttons.length === 0) { box.innerHTML = '<div class="empty" style="padding:14px">لا توجد أزرار</div>'; return; }
+  box.innerHTML = builderState.buttons.map((b, i) => `
+    <div class="form-grid" style="margin-bottom:8px">
+      <select onchange="mbUpdateButton(${i},'type',this.value)">
+        ${['primary','secondary','success','danger','link'].map(t=>`<option value="${t}" ${b.type===t?'selected':''}>${t}</option>`).join('')}
+      </select>
+      <input type="text" placeholder="Label" value="${escapeHtml(b.label||'')}" oninput="mbUpdateButton(${i},'label',this.value)">
+      <input type="text" placeholder="Emoji" value="${escapeHtml(b.emoji||'')}" oninput="mbUpdateButton(${i},'emoji',this.value)">
+      ${b.type === 'link' ? `<input type="url" placeholder="URL" value="${escapeHtml(b.url||'')}" oninput="mbUpdateButton(${i},'url',this.value)">` : ''}
+      <button class="btn-danger" style="padding:4px 8px;font-size:11px" onclick="mbRemoveButton(${i})">✕</button>
+    </div>`).join('');
+}
+
+// ===== PREVIEW & ACTIONS =====
 function renderBuilderPreview() {
   const box = $('mb-preview');
   if (!box) return;
   
   if (builderState.mode === 'v2') {
     let html = '<div style="background:#2b2d31; border-radius:8px; border-left:4px solid #5865f2; padding:12px; display:flex; flex-direction:column; gap:8px;">';
-    
     for (const c of builderState.v2Components) {
       if (c.type === 'text') {
         html += `<div style="font-family:Tajawal,sans-serif; color:#dbdee1; font-size:15px; white-space:pre-wrap;">${escapeHtml(c.content || ' ')}</div>`;
       } else if (c.type === 'separator') {
         const margin = c.spacing === 'large' ? '16px' : '8px';
-        if (c.divider) {
-          html += `<div style="height:1px; background:#3f4147; margin:${margin} 0;"></div>`;
-        } else {
-          html += `<div style="height:1px; opacity:0; margin:${margin} 0;"></div>`;
-        }
+        if (c.divider) html += `<div style="height:1px; background:#3f4147; margin:${margin} 0;"></div>`;
+        else html += `<div style="height:1px; opacity:0; margin:${margin} 0;"></div>`;
       } else if (c.type === 'section') {
         html += `
           <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px;">
@@ -2169,26 +2243,17 @@ function renderBuilderPreview() {
         const urls = (c.imageUrls || '').split(',').map(u=>u.trim()).filter(u=>u.startsWith('http'));
         if (urls.length > 0) {
           html += `<div style="display:grid; grid-template-columns:repeat(${Math.min(urls.length, 3)}, 1fr); gap:4px;">`;
-          for (const u of urls.slice(0, 3)) {
-            html += `<img src="${escapeHtml(u)}" style="width:100%;border-radius:4px;max-height:150px;object-fit:cover;">`;
-          }
+          for (const u of urls.slice(0, 3)) html += `<img src="${escapeHtml(u)}" style="width:100%;border-radius:4px;max-height:150px;object-fit:cover;">`;
           html += `</div>`;
-        } else {
-          html += `<div style="color:#8e8e8e;font-size:12px;">لا توجد صور صالحة</div>`;
-        }
+        } else html += `<div style="color:#8e8e8e;font-size:12px;">لا توجد صور صالحة</div>`;
       }
     }
-    
-    if (builderState.v2Components.length === 0) {
-      html += '<div style="color:#6e6e6e;text-align:center;padding:20px">أضف عناصر للمعاينة</div>';
-    }
-    
+    if (builderState.v2Components.length === 0) html += '<div style="color:#6e6e6e;text-align:center;padding:20px">أضف عناصر للمعاينة</div>';
     html += '</div>';
     box.innerHTML = html;
     return;
   }
 
-  // Classic Preview
   const content = builderState.content || '';
   const embeds = builderState.embeds || [];
   const buttons = builderState.buttons || [];
