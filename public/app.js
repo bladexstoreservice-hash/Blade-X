@@ -2252,12 +2252,16 @@ function renderBuilderPreview() {
   if (!box) return;
   
   if (builderState.mode === 'v2') {
-    let borderStyle = `border-left:4px solid ${builderState.v2Color || '#5865f2'};`;
-    let html = `<div style="background:#2b2d31; border-radius:8px; ${borderStyle} padding:12px; display:flex; flex-direction:column; gap:8px;">`;
+    let html = '';
     
+    // ✅ 1. عرض النص العلوي خارج الحاوية
     if (builderState.v2Content) {
-      html += `<div style="font-family:Tajawal,sans-serif; color:#dbdee1; font-size:15px; white-space:pre-wrap;">${escapeHtml(builderState.v2Content)}</div>`;
+      html += `<div style="font-family:Tajawal,sans-serif; color:#dbdee1; font-size:15px; white-space:pre-wrap; margin-bottom:8px;">${escapeHtml(builderState.v2Content)}</div>`;
     }
+
+    // ✅ 2. عرض الحاوية الداخلية
+    let borderStyle = `border-left:4px solid ${builderState.v2Color || '#5865f2'};`;
+    html += `<div style="background:#2b2d31; border-radius:8px; ${borderStyle} padding:12px; display:flex; flex-direction:column; gap:8px;">`;
 
     for (const c of builderState.v2Components) {
       if (c.type === 'text') {
@@ -2287,15 +2291,17 @@ function renderBuilderPreview() {
         </div>`;
       }
     }
+    
     if (builderState.v2Components.length === 0 && !builderState.v2Content) {
       html += '<div style="color:#6e6e6e;text-align:center;padding:20px">أضف عناصر للمعاينة</div>';
     }
+    
     html += '</div>';
     box.innerHTML = html;
     return;
   }
 
-  // Classic Preview
+  // Classic Preview (لم يتغير)
   const content = builderState.content || '';
   const embeds = builderState.embeds || [];
   const buttons = builderState.buttons || [];

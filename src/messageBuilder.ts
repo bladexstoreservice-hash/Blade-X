@@ -41,7 +41,6 @@ export interface V2ComponentData {
   spacing?: 'small' | 'large';
   accessoryUrl?: string;
   imageUrls?: string;
-  // Link Button specific fields
   label?: string;
   url?: string;
   emoji?: string;
@@ -136,10 +135,6 @@ export function toDiscordPayload(payload: BuilderPayload): any {
       container.setAccentColor(parseInt(payload.v2Color.slice(1), 16) as any);
     }
 
-    if (payload.v2Content && payload.v2Content.trim()) {
-      container.addTextDisplayComponents(new TextDisplayBuilder().setContent(payload.v2Content));
-    }
-
     let currentRow: ActionRowBuilder<ButtonBuilder> | null = null;
 
     for (const c of (payload.v2Components || [])) {
@@ -187,12 +182,22 @@ export function toDiscordPayload(payload: BuilderPayload): any {
         if (currentRow.components.length >= 5) currentRow = null;
       }
     }
-    out.components = [container];
+    
+    // ✅ فصل النص العلوي عن الحاوية
+    const finalComponents: any[] = [];
+    
+    if (payload.v2Content && payload.v2Content.trim()) {
+      finalComponents.push(new TextDisplayBuilder().setContent(payload.v2Content));
+    }
+    
+    finalComponents.push(container);
+    
+    out.components = finalComponents;
     out.flags = MessageFlags.IsComponentsV2;
     return out;
   }
 
-  // Classic
+  // Classic Mode
   if (payload.content && payload.content.trim()) out.content = payload.content;
 
   if (payload.embeds && payload.embeds.length > 0) {
