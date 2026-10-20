@@ -1,10 +1,11 @@
 import {
   Client, TextChannel, EmbedBuilder, ActionRowBuilder,
   ButtonBuilder, ButtonStyle, MessageFlags, ChannelType,
+  ContainerBuilder, TextDisplayBuilder, SeparatorBuilder,
+  SectionBuilder, ThumbnailBuilder, MediaGalleryBuilder, MediaGalleryItemBuilder
 } from 'discord.js';
 import { config } from './config.js';
 
-// ===== الأنواع =====
 export interface BuilderField {
   name: string;
   value: string;
@@ -28,44 +29,57 @@ export interface BuilderButton {
   type: 'primary' | 'secondary' | 'success' | 'danger' | 'link';
   label: string;
   emoji?: string;
-  url?: string; // for link buttons
-  custom_id?: string; // for non-link
+  url?: string;
+  custom_id?: string;
+}
+
+export interface V2ComponentData {
+  id: string;
+  type: 'text' | 'separator' | 'section' | 'gallery';
+  content?: string;
+  divider?: boolean;
+  spacing?: 'small' | 'large';
+  accessoryUrl?: string;
+  imageUrls?: string;
 }
 
 export interface BuilderPayload {
+  mode?: 'classic' | 'v2';
   content?: string;
   embeds?: BuilderEmbed[];
   buttons?: BuilderButton[];
+  v2Components?: V2ComponentData[];
   allowedMentions?: { parse?: string[]; roles?: string[]; users?: string[] };
 }
 
-// ===== التحقق =====
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
 
-/**
- * Returns null when payload is valid, or a clear Arabic error string otherwise.
- *
- * Important: Discord rejects empty messages with code 50006. We catch this
- * BEFORE calling channel.send() so the dashboard receives an actionable error
- * instead of a Discord API crash. Message is "empty" if it has:
- *   - no non-whitespace content
- *   - no embeds
- *   - no valid buttons (buttons must have at least a non-empty label)
- * Files-only messages are NOT supported by this builder (there's no files field).
- */
 export function validatePayload(payload: BuilderPayload): string | null {
   if (!payload || typeof payload !== 'object') return 'payload مطلوب';
 
-  const hasContent =
-    typeof payload.content === 'string' && payload.content.trim().length > 0;
-  const hasEmbeds =
-    Array.isArray(payload.embeds) && payload.embeds.length > 0;
-  const hasButtons =
-    Array.isArray(payload.buttons) &&
-    payload.buttons.some((b) => b && typeof b.label === 'string' && b.label.trim().length > 0);
+  const mode = payload.mode || 'classic';
+
+  if (mode === 'v2') {
+    const comps = payload.v2Components || [];
+    if (comps.length === 0) return 'الرسالة فارغة: أضف عنصراً واحداً على الأقل (نص أو فاصل)';
+    if (comps.length > 40) return 'الحد الأقصى للعناصر هو 40 عنصر';
+    
+    let totalTextLength = 0;
+    for (const c of comps) {
+      if (c.type === 'text' && c.content) totalTextLength += c.content.length;
+      if (c.type === 'section' && c.content) totalTextLength += c.content.length;
+    }
+    if (totalTextLength > 4000) return 'مجموع النصوص يتجاوز 4000 حرف';
+    return null;
+  }
+
+  // Classic Validation
+  const hasContent = typeof payload.content === 'string' && payload.content.trim().length > 0;
+  const hasEmbeds = Array.isArray(payload.embeds) && payload.embeds.length > 0;
+  const hasButtons = Array.isArray(payload.buttons) && payload.buttons.some((b) => b && typeof b.label === 'string' && b.label.trim().length > 0);
 
   if (!hasContent && !hasEmbeds && !hasButtons) {
-    return 'الرسالة فارغة: أضف نصًا أو Embed واحدًا على الأقل أو زرًا واحدًا';
+    return 'الرسالة فارغة: أضف نصًا أو Embed أو زرًا';
   }
 
   if (payload.content && payload.content.length > 2000) return 'المحتوى يتجاوز 2000 حرف';
@@ -81,8 +95,6 @@ export function validatePayload(payload: BuilderPayload): string | null {
         if (f.name.length > 256) return 'اسم الحقل يتجاوز 256 حرف';
         if (f.value.length > 1024) return 'قيمة الحقل تتجاوز 1024 حرف';
       }
-      if (e.footer && e.footer.text.length > 2048) return 'Footer يتجاوز 2048 حرف';
-      if (e.author && e.author.name.length > 256) return 'Author name يتجاوز 256 حرف';
       totalLen += (e.title?.length ?? 0) + (e.description?.length ?? 0);
       totalLen += (e.fields ?? []).reduce((a, f) => a + f.name.length + f.value.length, 0);
     }
@@ -100,10 +112,44 @@ export function validatePayload(payload: BuilderPayload): string | null {
   return null;
 }
 
-// ===== التحويل إلى كائنات discord.js =====
 export function toDiscordPayload(payload: BuilderPayload): any {
-  const out: any = {};
+  const out: any = { allowedMentions: payload.allowedMentions ?? { parse: [] } };
+  const mode = payload.mode || 'classic';
 
+  if (mode === 'v2') {
+    const container = new ContainerBuilder();
+    // Optional: Add accent color if we add color picker later
+    
+    for (const c of (payload.v2Components || [])) {
+      if (c.type === 'text') {
+        container.addTextDisplayComponents(new TextDisplayBuilder().setContent(c.content || ' '));
+      } else if (c.type === 'separator') {
+        const sep = new SeparatorBuilder();
+        sep.setDivider(c.divider !== false);
+        sep.setSpacing(c.spacing === 'large' ? 2 : 1);
+        container.addSeparatorComponents(sep);
+      } else if (c.type === 'section') {
+        const sec = new SectionBuilder();
+        sec.addTextDisplayComponents(new TextDisplayBuilder().setContent(c.content || ' '));
+        if (c.accessoryUrl) {
+          try { sec.setThumbnailAccessory(new ThumbnailBuilder().setURL(c.accessoryUrl)); } catch {}
+        }
+        container.addSectionComponents(sec);
+      } else if (c.type === 'gallery' && c.imageUrls) {
+        const gallery = new MediaGalleryBuilder();
+        const urls = c.imageUrls.split(',').map(u => u.trim()).filter(u => u.startsWith('http'));
+        for (const url of urls.slice(0, 10)) {
+          gallery.addItems(new MediaGalleryItemBuilder().setURL(url));
+        }
+        if (gallery.items.length > 0) container.addMediaGalleryComponents(gallery);
+      }
+    }
+    out.components = [container];
+    out.flags = MessageFlags.IsComponentsV2;
+    return out;
+  }
+
+  // Classic
   if (payload.content && payload.content.trim()) out.content = payload.content;
 
   if (payload.embeds && payload.embeds.length > 0) {
@@ -118,9 +164,7 @@ export function toDiscordPayload(payload: BuilderPayload): any {
       if (e.image?.url) embed.setImage(e.image.url);
       if (e.footer?.text) embed.setFooter({ text: e.footer.text, iconURL: e.footer.icon_url });
       if (e.timestamp) embed.setTimestamp();
-      if (e.fields && e.fields.length > 0) {
-        embed.addFields(e.fields.map(f => ({ name: f.name || '—', value: f.value || '—', inline: !!f.inline })));
-      }
+      if (e.fields && e.fields.length > 0) embed.addFields(e.fields.map(f => ({ name: f.name || '—', value: f.value || '—', inline: !!f.inline })));
       return embed;
     });
   }
@@ -129,18 +173,13 @@ export function toDiscordPayload(payload: BuilderPayload): any {
     const valid = payload.buttons.filter(b => b && typeof b.label === 'string' && b.label.trim().length > 0);
     if (valid.length > 0) {
       const styleMap: Record<BuilderButton['type'], ButtonStyle> = {
-        primary: ButtonStyle.Primary,
-        secondary: ButtonStyle.Secondary,
-        success: ButtonStyle.Success,
-        danger: ButtonStyle.Danger,
-        link: ButtonStyle.Link,
+        primary: ButtonStyle.Primary, secondary: ButtonStyle.Secondary,
+        success: ButtonStyle.Success, danger: ButtonStyle.Danger, link: ButtonStyle.Link,
       };
       const rows: ActionRowBuilder<ButtonBuilder>[] = [];
       let row = new ActionRowBuilder<ButtonBuilder>();
       for (const b of valid) {
-        const btn = new ButtonBuilder()
-          .setLabel(b.label.slice(0, 80))
-          .setStyle(styleMap[b.type] ?? ButtonStyle.Secondary);
+        const btn = new ButtonBuilder().setLabel(b.label.slice(0, 80)).setStyle(styleMap[b.type] ?? ButtonStyle.Secondary);
         if (b.type === 'link' && b.url) btn.setURL(b.url);
         else btn.setCustomId(b.custom_id || `mb:noop:${Math.random().toString(36).slice(2, 10)}`);
         if (b.emoji) {
@@ -148,7 +187,7 @@ export function toDiscordPayload(payload: BuilderPayload): any {
             const m = b.emoji.match(/^<a?:(\w+):(\d+)>$/);
             if (m) btn.setEmoji({ name: m[1], id: m[2] });
           } else {
-            try { btn.setEmoji(b.emoji); } catch { /* ignore invalid */ }
+            try { btn.setEmoji(b.emoji); } catch { }
           }
         }
         row.addComponents(btn);
@@ -158,12 +197,9 @@ export function toDiscordPayload(payload: BuilderPayload): any {
       if (rows.length > 0) out.components = rows;
     }
   }
-
-  out.allowedMentions = payload.allowedMentions ?? { parse: [] };
   return out;
 }
 
-// ===== الإرسال الفعلي عبر البوت =====
 export async function sendViaBot(
   client: Client,
   channelId: string,
@@ -192,19 +228,9 @@ export async function sendViaBot(
 
   try {
     const discordPayload = toDiscordPayload(payload);
-
-    // ✅ Final safety net: never call channel.send() with a payload Discord will reject as empty.
-    const hasAny =
-      (typeof discordPayload.content === 'string' && discordPayload.content.trim().length > 0) ||
-      (Array.isArray(discordPayload.embeds) && discordPayload.embeds.length > 0) ||
-      (Array.isArray(discordPayload.components) && discordPayload.components.length > 0);
-
-    if (!hasAny) {
-      return {
-        ok: false,
-        error: 'الرسالة فارغة بعد المعالجة — تحقق من المحتوى/المكونات قبل الإرسال.',
-      };
-    }
+    const hasAny = (discordPayload.content) || (discordPayload.embeds) || (discordPayload.components);
+    
+    if (!hasAny) return { ok: false, error: 'الرسالة فارغة' };
 
     const msg = await textChannel.send(discordPayload);
     return { ok: true, messageId: msg.id, channelId: msg.channelId };

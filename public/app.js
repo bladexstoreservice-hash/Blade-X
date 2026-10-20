@@ -1960,7 +1960,14 @@ async function resetAllEmojis() {
 // ============================================================
 // Message Builder
 // ============================================================
-let builderState = { content: '', embeds: [], buttons: [], channelId: '' };
+let builderState = { 
+  mode: 'classic',
+  content: '', 
+  embeds: [], 
+  buttons: [], 
+  v2Components: [],
+  channelId: '' 
+};
 
 async function pageBuilder() {
   contentArea.innerHTML = `
@@ -1973,111 +1980,215 @@ async function pageBuilder() {
           <button class="btn-secondary" onclick="mbExportJSON()">⬇️ تصدير</button>
         </div>
       </div>
+      
+      <div class="form-row" style="margin-bottom: 20px;">
+        <label>نمط الرسالة (Mode)</label>
+        <select id="mb-mode" onchange="mbSetMode(this.value)" style="max-width: 300px;">
+          <option value="classic" ${builderState.mode === 'classic' ? 'selected' : ''}>Classic (Embeds & Buttons)</option>
+          <option value="v2" ${builderState.mode === 'v2' ? 'selected' : ''}>Components V2 (Modern UI)</option>
+        </select>
+      </div>
+
       <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items:start">
         <div>
           <div class="form-row"><label>القناة</label><select id="mb-channel">${discordChannels.filter(c=>c.type===0||c.type===5).map(c=>`<option value="${c.id}">#${escapeHtml(c.name)}</option>`).join('')}</select></div>
-          <div class="form-row"><label>المحتوى</label><textarea id="mb-content" rows="4" oninput="mbUpdate('content', this.value)">${escapeHtml(builderState.content)}</textarea></div>
-          <div class="form-row"><label>Allowed Mentions</label><label class="switch"><input type="checkbox" id="mb-allow-everyone"><span class="track"></span><span class="label-text">السماح بـ @everyone</span></label></div>
-          <div class="panel" style="background:var(--bg-elev-2); margin-top:14px">
-            <div class="panel-header" style="margin-bottom:10px"><div class="panel-title" style="font-size:14px">Embeds</div><button class="btn-secondary" style="padding:5px 10px;font-size:12px" onclick="mbAddEmbed()">+ إضافة</button></div>
-            <div id="mb-embeds-list"></div>
+          
+          <div id="mb-classic-editor" style="display: ${builderState.mode === 'classic' ? 'block' : 'none'};">
+            <div class="form-row"><label>المحتوى (Content)</label><textarea id="mb-content" rows="4" oninput="mbUpdate('content', this.value)">${escapeHtml(builderState.content)}</textarea></div>
+            <div class="form-row"><label>Allowed Mentions</label><label class="switch"><input type="checkbox" id="mb-allow-everyone"><span class="track"></span><span class="label-text">السماح بـ @everyone</span></label></div>
+            
+            <div class="panel" style="background:var(--bg-elev-2); margin-top:14px">
+              <div class="panel-header" style="margin-bottom:10px"><div class="panel-title" style="font-size:14px">Embeds</div><button class="btn-secondary" style="padding:5px 10px;font-size:12px" onclick="mbAddEmbed()">+ إضافة</button></div>
+              <div id="mb-embeds-list"></div>
+            </div>
+
+            <div class="panel" style="background:var(--bg-elev-2); margin-top:14px">
+              <div class="panel-header" style="margin-bottom:10px"><div class="panel-title" style="font-size:14px">Buttons</div><button class="btn-secondary" style="padding:5px 10px;font-size:12px" onclick="mbAddButton()">+ إضافة</button></div>
+              <div id="mb-buttons-list"></div>
+            </div>
           </div>
-          <div class="panel" style="background:var(--bg-elev-2); margin-top:14px">
-            <div class="panel-header" style="margin-bottom:10px"><div class="panel-title" style="font-size:14px">Buttons</div><button class="btn-secondary" style="padding:5px 10px;font-size:12px" onclick="mbAddButton()">+ إضافة</button></div>
-            <div id="mb-buttons-list"></div>
+
+          <div id="mb-v2-editor" style="display: ${builderState.mode === 'v2' ? 'block' : 'none'};">
+            <div class="panel" style="background:var(--bg-elev-2); margin-bottom:14px">
+              <div class="panel-header" style="margin-bottom:10px"><div class="panel-title" style="font-size:14px">إضافة عنصر (V2)</div></div>
+              <div class="btn-row" style="margin-top:0">
+                <button class="btn-secondary" onclick="mbAddV2('text')">+ نص / عنوان</button>
+                <button class="btn-secondary" onclick="mbAddV2('separator')">+ فاصل (Separator)</button>
+                <button class="btn-secondary" onclick="mbAddV2('section')">+ قسم مع صورة (Section)</button>
+                <button class="btn-secondary" onclick="mbAddV2('gallery')">+ معرض صور (Gallery)</button>
+              </div>
+            </div>
+            <div id="mb-v2-list"></div>
           </div>
+
           <div class="btn-row" style="margin-top:20px">
             <button class="btn-primary" onclick="mbSend(this)">📤 إرسال</button>
             <button class="btn-secondary" onclick="mbSaveDraft()">💾 حفظ كمسودة</button>
             <button class="btn-danger" onclick="mbReset()">🗑️ مسح</button>
           </div>
         </div>
+        
         <div>
-          <div class="panel-header"><div class="panel-title">👁️ المعاينة</div></div>
-          <div id="mb-preview" class="preview-box" style="min-height:400px; padding:20px; display:block"></div>
+          <div class="panel-header"><div class="panel-title">👁️ المعاينة الحية</div></div>
+          <div id="mb-preview" style="background:#1e1f22; border-radius:8px; padding:16px; min-height:400px; display:flex; flex-direction:column; gap:8px;"></div>
         </div>
       </div>
     </div>`;
+  
   $('mb-channel').addEventListener('change', (e) => { builderState.channelId = e.target.value; });
   builderState.channelId = $('mb-channel').value || '';
-  renderBuilderEmbeds(); renderBuilderButtons(); renderBuilderPreview();
+  
+  if (builderState.mode === 'classic') {
+    renderBuilderEmbeds(); 
+    renderBuilderButtons();
+  } else {
+    renderBuilderV2();
+  }
+  renderBuilderPreview();
 }
 
-function mbUpdate(field, value) { builderState[field] = value; renderBuilderPreview(); }
-function mbAddEmbed() {
-  if (builderState.embeds.length >= 10) { toast('الحد الأقصى 10 Embeds', 'error'); return; }
-  builderState.embeds.push({ title: '', description: '', color: '#5865f2', fields: [], timestamp: false });
-  renderBuilderEmbeds(); renderBuilderPreview();
+function mbSetMode(mode) {
+  builderState.mode = mode;
+  $('mb-classic-editor').style.display = mode === 'classic' ? 'block' : 'none';
+  $('mb-v2-editor').style.display = mode === 'v2' ? 'block' : 'none';
+  if (mode === 'classic') { renderBuilderEmbeds(); renderBuilderButtons(); }
+  else { renderBuilderV2(); }
+  renderBuilderPreview();
 }
-function mbRemoveEmbed(i) { builderState.embeds.splice(i, 1); renderBuilderEmbeds(); renderBuilderPreview(); }
-function mbUpdateEmbed(i, field, value) { builderState.embeds[i][field] = value; renderBuilderPreview(); }
-function mbAddField(i) {
-  if (!builderState.embeds[i].fields) builderState.embeds[i].fields = [];
-  if (builderState.embeds[i].fields.length >= 25) { toast('الحد الأقصى 25 حقل', 'error'); return; }
-  builderState.embeds[i].fields.push({ name: '', value: '', inline: false });
-  renderBuilderEmbeds(); renderBuilderPreview();
-}
-function mbUpdateField(i, j, field, value) { builderState.embeds[i].fields[j][field] = value; renderBuilderPreview(); }
-function mbRemoveField(i, j) { builderState.embeds[i].fields.splice(j, 1); renderBuilderEmbeds(); renderBuilderPreview(); }
 
-function renderBuilderEmbeds() {
-  const box = $('mb-embeds-list');
+// ===== V2 Functions =====
+function mbAddV2(type) {
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2,5);
+  if (type === 'text') builderState.v2Components.push({ id, type, content: 'نص جديد...' });
+  if (type === 'separator') builderState.v2Components.push({ id, type, divider: true, spacing: 'small' });
+  if (type === 'section') builderState.v2Components.push({ id, type, content: 'عنوان القسم', accessoryUrl: '' });
+  if (type === 'gallery') builderState.v2Components.push({ id, type, imageUrls: '' });
+  renderBuilderV2(); renderBuilderPreview();
+}
+
+function mbMoveV2(id, dir) {
+  const idx = builderState.v2Components.findIndex(c => c.id === id);
+  if (idx < 0) return;
+  const newIdx = idx + dir;
+  if (newIdx < 0 || newIdx >= builderState.v2Components.length) return;
+  const temp = builderState.v2Components[idx];
+  builderState.v2Components[idx] = builderState.v2Components[newIdx];
+  builderState.v2Components[newIdx] = temp;
+  renderBuilderV2(); renderBuilderPreview();
+}
+
+function mbRemoveV2(id) {
+  builderState.v2Components = builderState.v2Components.filter(c => c.id !== id);
+  renderBuilderV2(); renderBuilderPreview();
+}
+
+function mbUpdateV2(id, field, value) {
+  const c = builderState.v2Components.find(x => x.id === id);
+  if (c) { c[field] = value; renderBuilderPreview(); }
+}
+
+function renderBuilderV2() {
+  const box = $('mb-v2-list');
   if (!box) return;
-  if (builderState.embeds.length === 0) { box.innerHTML = '<div class="empty" style="padding:14px">لا توجد Embeds</div>'; return; }
-  box.innerHTML = builderState.embeds.map((e, i) => `
-    <div class="panel" style="background:var(--bg-elev);margin-bottom:10px">
-      <div class="panel-header" style="margin-bottom:8px"><div class="panel-title" style="font-size:13px">Embed #${i+1}</div><button class="btn-danger" style="padding:4px 8px;font-size:12px" onclick="mbRemoveEmbed(${i})">✕</button></div>
-      <div class="form-row"><label>العنوان</label><input type="text" value="${escapeHtml(e.title||'')}" oninput="mbUpdateEmbed(${i},'title',this.value)"></div>
-      <div class="form-row"><label>الوصف</label><textarea rows="3" oninput="mbUpdateEmbed(${i},'description',this.value)">${escapeHtml(e.description||'')}</textarea></div>
-      <div class="form-grid">
-        <div class="form-row"><label>اللون</label><input type="color" value="${e.color||'#5865f2'}" oninput="mbUpdateEmbed(${i},'color',this.value)"></div>
-        <div class="form-row"><label>URL</label><input type="url" value="${escapeHtml(e.url||'')}" oninput="mbUpdateEmbed(${i},'url',this.value)"></div>
-      </div>
-      <div class="form-row"><label>Author name</label><input type="text" value="${escapeHtml(e.author?.name||'')}" oninput="mbUpdateEmbed(${i},'author',{name:this.value})"></div>
-      <div class="form-grid">
-        <div class="form-row"><label>Thumbnail URL</label><input type="url" value="${escapeHtml(e.thumbnail?.url||'')}" oninput="mbUpdateEmbed(${i},'thumbnail',{url:this.value})"></div>
-        <div class="form-row"><label>Image URL</label><input type="url" value="${escapeHtml(e.image?.url||'')}" oninput="mbUpdateEmbed(${i},'image',{url:this.value})"></div>
-      </div>
-      <div class="form-row"><label>Footer</label><input type="text" value="${escapeHtml(e.footer?.text||'')}" oninput="mbUpdateEmbed(${i},'footer',{text:this.value})"></div>
-      <div class="form-row"><label class="switch"><input type="checkbox" ${e.timestamp?'checked':''} onchange="mbUpdateEmbed(${i},'timestamp',this.checked)"><span class="track"></span><span class="label-text">Timestamp</span></label></div>
-      <div class="panel-header" style="margin:10px 0 6px"><div style="font-size:12px;color:var(--text-dim)">الحقول</div><button class="btn-secondary" style="padding:3px 8px;font-size:11px" onclick="mbAddField(${i})">+</button></div>
-      ${(e.fields||[]).map((f,j)=>`
-        <div class="form-grid" style="margin-bottom:6px">
-          <input type="text" placeholder="Name" value="${escapeHtml(f.name||'')}" oninput="mbUpdateField(${i},${j},'name',this.value)">
-          <input type="text" placeholder="Value" value="${escapeHtml(f.value||'')}" oninput="mbUpdateField(${i},${j},'value',this.value)">
-          <label class="switch" style="font-size:12px"><input type="checkbox" ${f.inline?'checked':''} onchange="mbUpdateField(${i},${j},'inline',this.checked)"><span class="track"></span><span class="label-text">inline</span></label>
-          <button class="btn-danger" style="padding:4px 8px;font-size:11px" onclick="mbRemoveField(${i},${j})">✕</button>
-        </div>`).join('')}
-    </div>`).join('');
+  if (builderState.v2Components.length === 0) {
+    box.innerHTML = '<div class="empty">لا توجد عناصر. أضف نصاً أو فاصلاً للبدء.</div>';
+    return;
+  }
+  
+  box.innerHTML = builderState.v2Components.map((c, i) => {
+    let innerHtml = '';
+    if (c.type === 'text') {
+      innerHtml = `<textarea rows="3" style="width:100%" oninput="mbUpdateV2('${c.id}', 'content', this.value)">${escapeHtml(c.content||'')}</textarea>`;
+    } else if (c.type === 'separator') {
+      innerHtml = `
+        <div class="form-grid" style="margin:0">
+          <div class="form-row"><label>خط الفصل (Divider)</label>
+            <select onchange="mbUpdateV2('${c.id}', 'divider', this.value === 'true')">
+              <option value="true" ${c.divider ? 'selected' : ''}>مفعّل (خط)</option>
+              <option value="false" ${!c.divider ? 'selected' : ''}>معطّل (فراغ فقط)</option>
+            </select>
+          </div>
+          <div class="form-row"><label>المسافة (Spacing)</label>
+            <select onchange="mbUpdateV2('${c.id}', 'spacing', this.value)">
+              <option value="small" ${c.spacing === 'small' ? 'selected' : ''}>صغيرة (Small)</option>
+              <option value="large" ${c.spacing === 'large' ? 'selected' : ''}>كبيرة (Large)</option>
+            </select>
+          </div>
+        </div>`;
+    } else if (c.type === 'section') {
+      innerHtml = `
+        <textarea rows="2" style="width:100%;margin-bottom:8px;" placeholder="نص القسم..." oninput="mbUpdateV2('${c.id}', 'content', this.value)">${escapeHtml(c.content||'')}</textarea>
+        <input type="url" style="width:100%" placeholder="رابط الصورة المصغرة (Thumbnail URL)" value="${escapeHtml(c.accessoryUrl||'')}" oninput="mbUpdateV2('${c.id}', 'accessoryUrl', this.value)">
+      `;
+    } else if (c.type === 'gallery') {
+      innerHtml = `<input type="text" style="width:100%" placeholder="روابط الصور مفصولة بفاصلة ," value="${escapeHtml(c.imageUrls||'')}" oninput="mbUpdateV2('${c.id}', 'imageUrls', this.value)">`;
+    }
+
+    return `
+      <div class="panel" style="background:var(--bg-elev);margin-bottom:10px;border:1px solid var(--border);">
+        <div class="panel-header" style="margin-bottom:8px;padding-bottom:8px;">
+          <div class="panel-title" style="font-size:13px; text-transform:uppercase; color:#8e8e8e;">
+            ${c.type === 'text' ? '📝 نص / Text' : c.type === 'separator' ? '➖ فاصل / Separator' : c.type === 'section' ? '🖼️ قسم / Section' : '🌄 معرض / Gallery'}
+          </div>
+          <div>
+            <button class="btn-secondary" style="padding:2px 6px;font-size:11px" onclick="mbMoveV2('${c.id}', -1)" ${i === 0 ? 'disabled' : ''}>⬆️</button>
+            <button class="btn-secondary" style="padding:2px 6px;font-size:11px" onclick="mbMoveV2('${c.id}', 1)" ${i === builderState.v2Components.length - 1 ? 'disabled' : ''}>⬇️</button>
+            <button class="btn-danger" style="padding:2px 6px;font-size:11px" onclick="mbRemoveV2('${c.id}')">✕</button>
+          </div>
+        </div>
+        ${innerHtml}
+      </div>`;
+  }).join('');
 }
 
-function mbAddButton() {
-  if (builderState.buttons.length >= 25) { toast('الحد الأقصى 25 زر', 'error'); return; }
-  builderState.buttons.push({ type: 'secondary', label: 'زر', emoji: '', url: '' });
-  renderBuilderButtons(); renderBuilderPreview();
-}
-function mbUpdateButton(i, field, value) { builderState.buttons[i][field] = value; renderBuilderPreview(); }
-function mbRemoveButton(i) { builderState.buttons.splice(i, 1); renderBuilderButtons(); renderBuilderPreview(); }
-
-function renderBuilderButtons() {
-  const box = $('mb-buttons-list');
-  if (!box) return;
-  if (builderState.buttons.length === 0) { box.innerHTML = '<div class="empty" style="padding:14px">لا توجد أزرار</div>'; return; }
-  box.innerHTML = builderState.buttons.map((b, i) => `
-    <div class="form-grid" style="margin-bottom:8px">
-      <select onchange="mbUpdateButton(${i},'type',this.value)">
-        ${['primary','secondary','success','danger','link'].map(t=>`<option value="${t}" ${b.type===t?'selected':''}>${t}</option>`).join('')}
-      </select>
-      <input type="text" placeholder="Label" value="${escapeHtml(b.label||'')}" oninput="mbUpdateButton(${i},'label',this.value)">
-      <input type="text" placeholder="Emoji" value="${escapeHtml(b.emoji||'')}" oninput="mbUpdateButton(${i},'emoji',this.value)">
-      ${b.type === 'link' ? `<input type="url" placeholder="URL" value="${escapeHtml(b.url||'')}" oninput="mbUpdateButton(${i},'url',this.value)">` : ''}
-      <button class="btn-danger" style="padding:4px 8px;font-size:11px" onclick="mbRemoveButton(${i})">✕</button>
-    </div>`).join('');
-}
-
+// ===== PREVIEW =====
 function renderBuilderPreview() {
   const box = $('mb-preview');
   if (!box) return;
+  
+  if (builderState.mode === 'v2') {
+    let html = '<div style="background:#2b2d31; border-radius:8px; border-left:4px solid #5865f2; padding:12px; display:flex; flex-direction:column; gap:8px;">';
+    
+    for (const c of builderState.v2Components) {
+      if (c.type === 'text') {
+        html += `<div style="font-family:Tajawal,sans-serif; color:#dbdee1; font-size:15px; white-space:pre-wrap;">${escapeHtml(c.content || ' ')}</div>`;
+      } else if (c.type === 'separator') {
+        const margin = c.spacing === 'large' ? '16px' : '8px';
+        if (c.divider) {
+          html += `<div style="height:1px; background:#3f4147; margin:${margin} 0;"></div>`;
+        } else {
+          html += `<div style="height:1px; opacity:0; margin:${margin} 0;"></div>`;
+        }
+      } else if (c.type === 'section') {
+        html += `
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px;">
+            <div style="flex:1; font-family:Tajawal,sans-serif; color:#dbdee1; font-size:15px; white-space:pre-wrap;">${escapeHtml(c.content || ' ')}</div>
+            ${c.accessoryUrl ? `<img src="${escapeHtml(c.accessoryUrl)}" style="width:64px;height:64px;border-radius:8px;object-fit:cover;">` : ''}
+          </div>`;
+      } else if (c.type === 'gallery') {
+        const urls = (c.imageUrls || '').split(',').map(u=>u.trim()).filter(u=>u.startsWith('http'));
+        if (urls.length > 0) {
+          html += `<div style="display:grid; grid-template-columns:repeat(${Math.min(urls.length, 3)}, 1fr); gap:4px;">`;
+          for (const u of urls.slice(0, 3)) {
+            html += `<img src="${escapeHtml(u)}" style="width:100%;border-radius:4px;max-height:150px;object-fit:cover;">`;
+          }
+          html += `</div>`;
+        } else {
+          html += `<div style="color:#8e8e8e;font-size:12px;">لا توجد صور صالحة</div>`;
+        }
+      }
+    }
+    
+    if (builderState.v2Components.length === 0) {
+      html += '<div style="color:#6e6e6e;text-align:center;padding:20px">أضف عناصر للمعاينة</div>';
+    }
+    
+    html += '</div>';
+    box.innerHTML = html;
+    return;
+  }
+
+  // Classic Preview
   const content = builderState.content || '';
   const embeds = builderState.embeds || [];
   const buttons = builderState.buttons || [];
@@ -2113,32 +2224,43 @@ function renderBuilderPreview() {
 
 function mbBuildPayload() {
   const allowEveryone = $('mb-allow-everyone')?.checked;
-  return {
-    content: builderState.content || undefined,
-    embeds: builderState.embeds.length > 0 ? builderState.embeds.map(e => ({
-      title: e.title || undefined, description: e.description || undefined,
-      url: e.url || undefined, color: e.color || undefined,
-      author: e.author?.name ? e.author : undefined,
-      thumbnail: e.thumbnail?.url ? e.thumbnail : undefined,
-      image: e.image?.url ? e.image : undefined,
-      footer: e.footer?.text ? e.footer : undefined,
-      timestamp: !!e.timestamp,
-      fields: (e.fields || []).filter(f => f.name || f.value),
-    })) : undefined,
-    buttons: builderState.buttons.length > 0 ? builderState.buttons.filter(b => b.label) : undefined,
-    allowedMentions: allowEveryone ? { parse: ['everyone', 'roles', 'users'] } : { parse: [] },
+  const payload = {
+    mode: builderState.mode,
+    allowedMentions: allowEveryone ? { parse: ['everyone', 'roles', 'users'] } : { parse: [] }
   };
+  
+  if (builderState.mode === 'v2') {
+    payload.v2Components = builderState.v2Components;
+    return payload;
+  }
+
+  payload.content = builderState.content || undefined;
+  payload.embeds = builderState.embeds.length > 0 ? builderState.embeds.map(e => ({
+    title: e.title || undefined, description: e.description || undefined,
+    url: e.url || undefined, color: e.color || undefined,
+    author: e.author?.name ? e.author : undefined,
+    thumbnail: e.thumbnail?.url ? e.thumbnail : undefined,
+    image: e.image?.url ? e.image : undefined,
+    footer: e.footer?.text ? e.footer : undefined,
+    timestamp: !!e.timestamp,
+    fields: (e.fields || []).filter(f => f.name || f.value),
+  })) : undefined;
+  payload.buttons = builderState.buttons.length > 0 ? builderState.buttons.filter(b => b.label) : undefined;
+  
+  return payload;
 }
 
 async function mbSend(btn) {
   if (!builderState.channelId) { toast('اختر قناة', 'error'); return; }
-  const hasContent = typeof builderState.content === 'string' && builderState.content.trim().length > 0;
-  const hasEmbeds = Array.isArray(builderState.embeds) && builderState.embeds.length > 0;
-  const hasButtons = Array.isArray(builderState.buttons) && builderState.buttons.some(b => b && typeof b.label === 'string' && b.label.trim().length > 0);
-  if (!hasContent && !hasEmbeds && !hasButtons) {
-    toast('❌ الرسالة فارغة', 'error'); return;
-  }
   const payload = mbBuildPayload();
+  
+  if (builderState.mode === 'v2' && payload.v2Components.length === 0) {
+    toast('❌ الرسالة فارغة (V2)', 'error'); return;
+  }
+  if (builderState.mode === 'classic' && !payload.content && (!payload.embeds || payload.embeds.length===0) && (!payload.buttons || payload.buttons.length===0)) {
+    toast('❌ الرسالة فارغة (Classic)', 'error'); return;
+  }
+  
   if ($('mb-allow-everyone')?.checked && !(await confirmModal('تأكيد', 'الرسالة تحتوي على @everyone. متأكد؟'))) return;
   btn.disabled = true; btn.textContent = '...';
   try {
@@ -2166,9 +2288,13 @@ async function mbLoadDrafts() {
   const idx = parseInt(pick, 10) - 1;
   if (!list[idx]) return;
   const full = await api(`/api/builder/drafts/${list[idx].id}`);
+  
+  builderState.mode = full.payload.mode || 'classic';
   builderState.content = full.payload.content || '';
   builderState.embeds = full.payload.embeds || [];
   builderState.buttons = full.payload.buttons || [];
+  builderState.v2Components = full.payload.v2Components || [];
+  
   pageBuilder();
   toast('تم التحميل', 'success');
 }
@@ -2188,9 +2314,11 @@ function mbImportJSON() {
     try {
       const text = await file.text();
       const payload = JSON.parse(text);
+      builderState.mode = payload.mode || 'classic';
       builderState.content = payload.content || '';
       builderState.embeds = payload.embeds || [];
       builderState.buttons = payload.buttons || [];
+      builderState.v2Components = payload.v2Components || [];
       pageBuilder();
       toast('تم الاستيراد', 'success');
     } catch { toast('JSON غير صالح', 'error'); }
@@ -2199,7 +2327,7 @@ function mbImportJSON() {
 }
 
 function mbReset() {
-  builderState = { content: '', embeds: [], buttons: [], channelId: builderState.channelId };
+  builderState = { mode: builderState.mode, content: '', embeds: [], buttons: [], v2Components: [], channelId: builderState.channelId };
   pageBuilder();
 }
 

@@ -803,3 +803,11 @@ button {
 
   
 }
+
+/* =================== V2 Builder Styles =================== */
+#mb-v2-list textarea, #mb-v2-list input[type="url"], #mb-v2-list input[type="text"] {
+  font-family: 'Tajawal', 'Inter', monospace;
+}
+#mb-v2-editor .panel {
+  border-left: 3px solid var(--accent);
+}
