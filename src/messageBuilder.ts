@@ -16,7 +16,7 @@ export interface BuilderEmbed {
   title?: string;
   description?: string;
   url?: string;
-  color?: string; // hex
+  color?: string;
   author?: { name: string; icon_url?: string; url?: string };
   thumbnail?: { url: string };
   image?: { url: string };
@@ -35,12 +35,16 @@ export interface BuilderButton {
 
 export interface V2ComponentData {
   id: string;
-  type: 'text' | 'separator' | 'section' | 'gallery';
+  type: 'text' | 'separator' | 'section' | 'gallery' | 'link_button';
   content?: string;
   divider?: boolean;
   spacing?: 'small' | 'large';
   accessoryUrl?: string;
   imageUrls?: string;
+  // Link Button specific fields
+  label?: string;
+  url?: string;
+  emoji?: string;
 }
 
 export interface BuilderPayload {
@@ -49,6 +53,8 @@ export interface BuilderPayload {
   embeds?: BuilderEmbed[];
   buttons?: BuilderButton[];
   v2Components?: V2ComponentData[];
+  v2Content?: string;
+  v2Color?: string;
   allowedMentions?: { parse?: string[]; roles?: string[]; users?: string[] };
 }
 
@@ -60,14 +66,21 @@ export function validatePayload(payload: BuilderPayload): string | null {
   const mode = payload.mode || 'classic';
 
   if (mode === 'v2') {
+    if (payload.v2Color && !HEX_RE.test(payload.v2Color)) return 'لون طرف الحاوية (Accent Color) غير صالح';
+    
     const comps = payload.v2Components || [];
-    if (comps.length === 0) return 'الرسالة فارغة: أضف عنصراً واحداً على الأقل (نص أو فاصل)';
+    if (comps.length === 0 && !payload.v2Content?.trim()) return 'الرسالة فارغة: أضف محتوى أو عنصراً واحداً على الأقل';
     if (comps.length > 40) return 'الحد الأقصى للعناصر هو 40 عنصر';
     
-    let totalTextLength = 0;
+    let totalTextLength = (payload.v2Content || '').length;
     for (const c of comps) {
       if (c.type === 'text' && c.content) totalTextLength += c.content.length;
       if (c.type === 'section' && c.content) totalTextLength += c.content.length;
+      
+      if (c.type === 'link_button') {
+        if (!c.url || !/^https?:\/\//i.test(c.url)) return 'زر الرابط يحتاج رابطاً صالحاً يبدأ بـ http/https';
+        if (!c.label?.trim() && !c.emoji?.trim()) return 'زر الرابط يحتاج نصاً (Label) أو إيموجي';
+      }
     }
     if (totalTextLength > 4000) return 'مجموع النصوص يتجاوز 4000 حرف';
     return null;
@@ -118,16 +131,27 @@ export function toDiscordPayload(payload: BuilderPayload): any {
 
   if (mode === 'v2') {
     const container = new ContainerBuilder();
-    // Optional: Add accent color if we add color picker later
     
+    if (payload.v2Color && HEX_RE.test(payload.v2Color)) {
+      container.setAccentColor(parseInt(payload.v2Color.slice(1), 16) as any);
+    }
+
+    if (payload.v2Content && payload.v2Content.trim()) {
+      container.addTextDisplayComponents(new TextDisplayBuilder().setContent(payload.v2Content));
+    }
+
+    let currentRow: ActionRowBuilder<ButtonBuilder> | null = null;
+
     for (const c of (payload.v2Components || [])) {
       if (c.type === 'text') {
         container.addTextDisplayComponents(new TextDisplayBuilder().setContent(c.content || ' '));
+        currentRow = null;
       } else if (c.type === 'separator') {
         const sep = new SeparatorBuilder();
         sep.setDivider(c.divider !== false);
         sep.setSpacing(c.spacing === 'large' ? 2 : 1);
         container.addSeparatorComponents(sep);
+        currentRow = null;
       } else if (c.type === 'section') {
         const sec = new SectionBuilder();
         sec.addTextDisplayComponents(new TextDisplayBuilder().setContent(c.content || ' '));
@@ -135,6 +159,7 @@ export function toDiscordPayload(payload: BuilderPayload): any {
           try { sec.setThumbnailAccessory(new ThumbnailBuilder().setURL(c.accessoryUrl)); } catch {}
         }
         container.addSectionComponents(sec);
+        currentRow = null;
       } else if (c.type === 'gallery' && c.imageUrls) {
         const gallery = new MediaGalleryBuilder();
         const urls = c.imageUrls.split(',').map(u => u.trim()).filter(u => u.startsWith('http'));
@@ -142,6 +167,24 @@ export function toDiscordPayload(payload: BuilderPayload): any {
           gallery.addItems(new MediaGalleryItemBuilder().setURL(url));
         }
         if (gallery.items.length > 0) container.addMediaGalleryComponents(gallery);
+        currentRow = null;
+      } else if (c.type === 'link_button') {
+        if (!currentRow) {
+          currentRow = new ActionRowBuilder<ButtonBuilder>();
+          container.addActionRowComponents(currentRow);
+        }
+        const btn = new ButtonBuilder().setStyle(ButtonStyle.Link).setURL(c.url || 'https://discord.com');
+        if (c.label) btn.setLabel(c.label.slice(0, 80));
+        if (c.emoji) {
+          if (/^<a?:\w+:\d+>$/.test(c.emoji)) {
+            const m = c.emoji.match(/^<a?:(\w+):(\d+)>$/);
+            if (m) btn.setEmoji({ name: m[1], id: m[2] });
+          } else {
+            try { btn.setEmoji(c.emoji); } catch {}
+          }
+        }
+        currentRow.addComponents(btn);
+        if (currentRow.components.length >= 5) currentRow = null;
       }
     }
     out.components = [container];
