@@ -129,6 +129,31 @@ export function toDiscordPayload(payload: BuilderPayload): any {
   const mode = payload.mode || 'classic';
 
   if (mode === 'v2') {
+    // 1. استخراج جميع معرفات المستخدمين من النص لضمان عمل المنشن
+    const mentionRegex = /<@!?(\d{17,20})>/g;
+    const userIds: string[] = [];
+    let match;
+
+    const extractMentions = (text: string | undefined) => {
+      if (!text) return;
+      while ((match = mentionRegex.exec(text)) !== null) {
+        userIds.push(match[1]);
+      }
+    };
+
+    extractMentions(payload.v2Content);
+    for (const c of (payload.v2Components || [])) {
+      if (c.content) extractMentions(c.content);
+    }
+
+    const isEveryoneAllowed = payload.allowedMentions?.parse?.includes('everyone') ?? false;
+    
+    // 2. إعداد allowedMentions بشكل دقيق
+    out.allowedMentions = {
+      parse: isEveryoneAllowed ? ['everyone'] : [],
+      users: [...new Set(userIds)] // فقط المستخدمين المكتوبين في النص
+    };
+
     const container = new ContainerBuilder();
     
     if (payload.v2Color && HEX_RE.test(payload.v2Color)) {
@@ -183,13 +208,10 @@ export function toDiscordPayload(payload: BuilderPayload): any {
       }
     }
     
-    // ✅ فصل النص العلوي عن الحاوية
     const finalComponents: any[] = [];
-    
     if (payload.v2Content && payload.v2Content.trim()) {
       finalComponents.push(new TextDisplayBuilder().setContent(payload.v2Content));
     }
-    
     finalComponents.push(container);
     
     out.components = finalComponents;
@@ -197,9 +219,8 @@ export function toDiscordPayload(payload: BuilderPayload): any {
     return out;
   }
 
-  // Classic Mode
+  // Classic Mode (لم يتم تغييره)
   if (payload.content && payload.content.trim()) out.content = payload.content;
-
   if (payload.embeds && payload.embeds.length > 0) {
     out.embeds = payload.embeds.map(e => {
       const embed = new EmbedBuilder();
@@ -216,7 +237,6 @@ export function toDiscordPayload(payload: BuilderPayload): any {
       return embed;
     });
   }
-
   if (payload.buttons && payload.buttons.length > 0) {
     const valid = payload.buttons.filter(b => b && typeof b.label === 'string' && b.label.trim().length > 0);
     if (valid.length > 0) {

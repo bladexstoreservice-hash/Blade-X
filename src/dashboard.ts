@@ -215,6 +215,31 @@ app.get('/api/diag/texts', (req: Request, res: Response) => {
   }
 });
 
+app.get('/api/discord/members', requireAuth, async (req: Request, res: Response) => {
+  const query = String(req.query.q || '').trim();
+  if (!query) { res.json([]); return; }
+  
+  const client = (globalThis as any).__bladeClient;
+  if (!client || !client.isReady()) { res.json([]); return; }
+  
+  const guild = client.guilds.cache.get(config.guildId);
+  if (!guild) { res.json([]); return; }
+  
+  try {
+    const members = await guild.members.fetch({ query, limit: 25 });
+    const results = members.map((m: any) => ({
+      id: m.id,
+      username: m.user.username,
+      displayName: m.displayName || m.user.username,
+      avatar: m.user.displayAvatarURL({ size: 64, extension: 'png' })
+    }));
+    res.json(results);
+  } catch (e) {
+    console.error('[Blade X] ❌ member search:', e);
+    res.json([]);
+  }
+});
+
 app.get('/api/diag/routes', (_req: Request, res: Response) => {
   const routes: { method: string; path: string }[] = [];
   const stack = (app as any)._router?.stack ?? [];

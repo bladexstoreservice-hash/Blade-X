@@ -2014,10 +2014,15 @@ async function pageBuilder() {
             
             <div class="panel" style="background:var(--bg-elev-2); margin-bottom:14px">
               <div class="panel-header" style="margin-bottom:10px"><div class="panel-title" style="font-size:14px">إعدادات الحاوية (Container)</div></div>
-              <div class="form-row">
+              
+              <!-- ✅ هنا تم إضافة حقل المنشن -->
+              <div class="form-row" style="position: relative;">
                 <label>المحتوى العلوي (Content)</label>
-                <textarea rows="3" oninput="builderState.v2Content=this.value; renderBuilderPreview();">${escapeHtml(builderState.v2Content)}</textarea>
+                <textarea id="mb-v2-content-input" rows="3" oninput="builderState.v2Content=this.value; renderBuilderPreview(); mbHandleMentionInput(this);">${escapeHtml(builderState.v2Content)}</textarea>
+                <div id="mb-mention-dropdown" class="mention-dropdown hidden"></div>
               </div>
+              <!-- ============================== -->
+
               <div class="form-row">
                 <label>لون طرف الحاوية (Accent Color)</label>
                 <div style="display:flex; gap:8px;">
@@ -2063,15 +2068,6 @@ async function pageBuilder() {
   } else {
     renderBuilderV2();
   }
-  renderBuilderPreview();
-}
-
-function mbSetMode(mode) {
-  builderState.mode = mode;
-  $('mb-classic-editor').style.display = mode === 'classic' ? 'block' : 'none';
-  $('mb-v2-editor').style.display = mode === 'v2' ? 'block' : 'none';
-  if (mode === 'classic') { renderBuilderEmbeds(); renderBuilderButtons(); }
-  else { renderBuilderV2(); }
   renderBuilderPreview();
 }
 
@@ -2573,6 +2569,88 @@ document.querySelectorAll('#main-nav a').forEach((link) => {
 $('logout-btn').addEventListener('click', async () => {
   await fetch('/auth/logout', { method: 'POST', credentials: 'include' });
   window.location.href = '/auth/login';
+});
+
+// ============================================================
+// V2 Mention Autocomplete (Member Search)
+// ============================================================
+let mentionDebounce = null;
+let currentMentionQuery = null;
+
+function mbHandleMentionInput(textarea) {
+  const textBeforeCursor = textarea.value.slice(0, textarea.selectionStart);
+  const match = textBeforeCursor.match(/@([^\s@]*)$/);
+  const dropdown = $('mb-mention-dropdown');
+  
+  if (!match) {
+    dropdown.classList.add('hidden');
+    currentMentionQuery = null;
+    return;
+  }
+
+  const query = match[1];
+  if (query.length === 0) {
+     dropdown.classList.add('hidden');
+     return;
+  }
+
+  currentMentionQuery = query;
+  clearTimeout(mentionDebounce);
+  mentionDebounce = setTimeout(async () => {
+    try {
+      const members = await api(`/api/discord/members?q=${encodeURIComponent(query)}`);
+      if (currentMentionQuery !== query) return; // لتجنب تداخل الطلبات
+      
+      if (members.length === 0) {
+        dropdown.classList.add('hidden');
+        return;
+      }
+
+      dropdown.innerHTML = members.map(m => `
+        <div class="mention-item" onclick="mbInsertMention('${m.id}', '${escapeHtml(m.displayName)}')">
+          <img src="${m.avatar}" class="mention-avatar" onerror="this.src='/assets/logo.png'">
+          <div>
+            <div style="font-weight:bold;color:#fff;font-size:13px;">${escapeHtml(m.displayName)}</div>
+            <div style="font-size:11px;color:#b5bac1;">@${escapeHtml(m.username)}</div>
+          </div>
+        </div>
+      `).join('');
+      dropdown.classList.remove('hidden');
+    } catch (e) {
+      console.error(e);
+    }
+  }, 300);
+}
+
+function mbInsertMention(userId, displayName) {
+  const textarea = $('mb-v2-content-input');
+  const textBeforeCursor = textarea.value.slice(0, textarea.selectionStart);
+  const textAfterCursor = textarea.value.slice(textarea.selectionStart);
+  
+  const match = textBeforeCursor.match(/@([^\s@]*)$/);
+  if (!match) return;
+
+  const textToReplace = match[0];
+  const newTextBefore = textBeforeCursor.slice(0, -textToReplace.length) + `<@${userId}>`;
+  
+  textarea.value = newTextBefore + textAfterCursor;
+  builderState.v2Content = textarea.value;
+  
+  textarea.selectionStart = textarea.selectionEnd = newTextBefore.length;
+  textarea.focus();
+  
+  $('mb-mention-dropdown').classList.add('hidden');
+  currentMentionQuery = null;
+  renderBuilderPreview();
+}
+
+// إخفاء القائمة عند النقر خارجها
+document.addEventListener('click', (e) => {
+  const dropdown = $('mb-mention-dropdown');
+  const textarea = $('mb-v2-content-input');
+  if (dropdown && textarea && !dropdown.contains(e.target) && e.target !== textarea) {
+    dropdown.classList.add('hidden');
+  }
 });
 
 // ============================================================
