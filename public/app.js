@@ -2071,6 +2071,19 @@ async function pageBuilder() {
   renderBuilderPreview();
 }
 
+function mbSetMode(mode) {
+  builderState.mode = mode;
+  $('mb-classic-editor').style.display = mode === 'classic' ? 'block' : 'none';
+  $('mb-v2-editor').style.display = mode === 'v2' ? 'block' : 'none';
+  if (mode === 'classic') { 
+    renderBuilderEmbeds(); 
+    renderBuilderButtons(); 
+  } else { 
+    renderBuilderV2(); 
+  }
+  renderBuilderPreview();
+}
+
 // ===== V2 Functions =====
 function mbAddV2(type) {
   const id = Date.now().toString(36) + Math.random().toString(36).slice(2,5);
