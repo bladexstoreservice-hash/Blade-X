@@ -129,16 +129,21 @@ export function toDiscordPayload(payload: BuilderPayload): any {
   const mode = payload.mode || 'classic';
 
   if (mode === 'v2') {
-    // 1. استخراج جميع معرفات المستخدمين من النص لضمان عمل المنشن
+    // 1. استخراج جميع معرفات المستخدمين والرولات و @everyone / @here
     const mentionRegex = /<@!?(\d{17,20})>/g;
+    const roleRegex = /<@&(\d{17,20})>/g;
     const userIds: string[] = [];
+    const roleIds: string[] = [];
+    let hasEveryone = false;
+    let hasHere = false;
     let match;
 
     const extractMentions = (text: string | undefined) => {
       if (!text) return;
-      while ((match = mentionRegex.exec(text)) !== null) {
-        userIds.push(match[1]);
-      }
+      while ((match = mentionRegex.exec(text)) !== null) userIds.push(match[1]);
+      while ((match = roleRegex.exec(text)) !== null) roleIds.push(match[1]);
+      if (text.includes('@everyone')) hasEveryone = true;
+      if (text.includes('@here')) hasHere = true;
     };
 
     extractMentions(payload.v2Content);
@@ -146,12 +151,14 @@ export function toDiscordPayload(payload: BuilderPayload): any {
       if (c.content) extractMentions(c.content);
     }
 
-    const isEveryoneAllowed = payload.allowedMentions?.parse?.includes('everyone') ?? false;
+    const isEveryoneExplicitlyAllowed = payload.allowedMentions?.parse?.includes('everyone') ?? false;
+    const allowEveryone = isEveryoneExplicitlyAllowed || hasEveryone || hasHere;
     
     // 2. إعداد allowedMentions بشكل دقيق
     out.allowedMentions = {
-      parse: isEveryoneAllowed ? ['everyone'] : [],
-      users: [...new Set(userIds)] // فقط المستخدمين المكتوبين في النص
+      parse: allowEveryone ? ['everyone'] : [],
+      users: [...new Set(userIds)],
+      roles: [...new Set(roleIds)]
     };
 
     const container = new ContainerBuilder();
@@ -219,8 +226,9 @@ export function toDiscordPayload(payload: BuilderPayload): any {
     return out;
   }
 
-  // Classic Mode (لم يتم تغييره)
+  // Classic Mode
   if (payload.content && payload.content.trim()) out.content = payload.content;
+
   if (payload.embeds && payload.embeds.length > 0) {
     out.embeds = payload.embeds.map(e => {
       const embed = new EmbedBuilder();
@@ -237,6 +245,7 @@ export function toDiscordPayload(payload: BuilderPayload): any {
       return embed;
     });
   }
+
   if (payload.buttons && payload.buttons.length > 0) {
     const valid = payload.buttons.filter(b => b && typeof b.label === 'string' && b.label.trim().length > 0);
     if (valid.length > 0) {

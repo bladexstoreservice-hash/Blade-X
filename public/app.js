@@ -2376,23 +2376,55 @@ function mbBuildPayload() {
 
 async function mbSend(btn) {
   if (!builderState.channelId) { toast('اختر قناة', 'error'); return; }
+  
+  // ✅ التحقق من المنشن الجماعي في وضع Components V2
+  if (builderState.mode === 'v2') {
+    const textToCheck = (builderState.v2Content || '') + ' ' + (builderState.v2Components || []).map(c => c.content || '').join(' ');
+    if (textToCheck.includes('@everyone') || textToCheck.includes('@here')) {
+      const confirmed = await confirmModal(
+        '⚠️ تحذير: منشن جماعي', 
+        'الرسالة تحتوي على منشن جماعي (@everyone أو @here). هل أنت متأكد من الإرسال؟ قد يؤدي هذا إلى إزعاج الأعضاء.'
+      );
+      if (!confirmed) return;
+    }
+  }
+
   const payload = mbBuildPayload();
   
-  if (builderState.mode === 'v2' && payload.v2Components.length === 0 && !payload.v2Content) {
+  if (builderState.mode === 'v2' && payload.v2Components.length === 0 && !payload.v2Content?.trim()) {
     toast('❌ الرسالة فارغة (V2)', 'error'); return;
   }
+  
   if (builderState.mode === 'classic' && !payload.content && (!payload.embeds || payload.embeds.length===0) && (!payload.buttons || payload.buttons.length===0)) {
     toast('❌ الرسالة فارغة (Classic)', 'error'); return;
   }
   
-  if ($('mb-allow-everyone')?.checked && !(await confirmModal('تأكيد', 'الرسالة تحتوي على @everyone. متأكد؟'))) return;
-  btn.disabled = true; btn.textContent = '...';
+  // التحقق من @everyone في وضع Classic (الزر القديم)
+  if (builderState.mode === 'classic' && $('mb-allow-everyone')?.checked) {
+    const confirmed = await confirmModal('تأكيد', 'الرسالة تحتوي على @everyone. متأكد؟');
+    if (!confirmed) return;
+  }
+
+  btn.disabled = true; 
+  btn.textContent = '...';
+  
   try {
-    const res = await api('/api/builder/send', { method: 'POST', body: JSON.stringify({ channelId: builderState.channelId, payload }) });
-    if (res.ok) toast(`تم الإرسال! ID: ${res.messageId}`, 'success');
-    else toast(res.error || 'فشل', 'error');
-  } catch (e) { toast(e.message, 'error'); }
-  finally { btn.disabled = false; btn.textContent = '📤 إرسال'; }
+    const res = await api('/api/builder/send', { 
+      method: 'POST', 
+      body: JSON.stringify({ channelId: builderState.channelId, payload }) 
+    });
+    
+    if (res.ok) {
+      toast(`تم الإرسال! ID: ${res.messageId}`, 'success');
+    } else {
+      toast(res.error || 'فشل الإرسال', 'error');
+    }
+  } catch (e) { 
+    toast(e.message, 'error'); 
+  } finally { 
+    btn.disabled = false; 
+    btn.textContent = '📤 إرسال'; 
+  }
 }
 
 async function mbSaveDraft() {
@@ -2611,23 +2643,56 @@ function mbHandleMentionInput(textarea) {
   clearTimeout(mentionDebounce);
   mentionDebounce = setTimeout(async () => {
     try {
-      const members = await api(`/api/discord/members?q=${encodeURIComponent(query)}`);
-      if (currentMentionQuery !== query) return; // لتجنب تداخل الطلبات
+      const [members, roles] = await Promise.all([
+        api(`/api/discord/members?q=${encodeURIComponent(query)}`),
+        api('/api/discord/roles')
+      ]);
       
-      if (members.length === 0) {
+      if (currentMentionQuery !== query) return;
+
+      let html = '';
+
+      // 1. خيارات @everyone و @here
+      if ('everyone'.includes(query.toLowerCase())) {
+        html += `<div class="mention-item" onclick="mbInsertMention('', '', 'everyone')" style="border-bottom:1px solid #1e1f22;">
+                  <div style="font-weight:bold;color:#fff;font-size:13px;padding:4px 0;">@everyone</div>
+                 </div>`;
+      }
+      if ('here'.includes(query.toLowerCase())) {
+        html += `<div class="mention-item" onclick="mbInsertMention('', '', 'here')" style="border-bottom:1px solid #1e1f22;">
+                  <div style="font-weight:bold;color:#fff;font-size:13px;padding:4px 0;">@here</div>
+                 </div>`;
+      }
+
+      // 2. الرولات
+      const matchingRoles = roles.filter(r => r.name.toLowerCase().includes(query.toLowerCase())).slice(0, 10);
+      for (const r of matchingRoles) {
+        const colorHex = r.color ? '#' + r.color.toString(16).padStart(6, '0') : '#99aab5';
+        html += `
+          <div class="mention-item" onclick="mbInsertMention('${r.id}', '${escapeHtml(r.name)}', 'role')">
+            <div style="width:14px;height:14px;border-radius:50%;background:${colorHex};margin-right:8px;"></div>
+            <div style="font-weight:bold;color:#fff;font-size:13px;">@${escapeHtml(r.name)}</div>
+          </div>`;
+      }
+
+      // 3. الأعضاء
+      for (const m of members) {
+        html += `
+          <div class="mention-item" onclick="mbInsertMention('${m.id}', '${escapeHtml(m.displayName)}', 'user')">
+            <img src="${m.avatar}" class="mention-avatar" onerror="this.src='/assets/logo.png'">
+            <div>
+              <div style="font-weight:bold;color:#fff;font-size:13px;">${escapeHtml(m.displayName)}</div>
+              <div style="font-size:11px;color:#b5bac1;">@${escapeHtml(m.username)}</div>
+            </div>
+          </div>`;
+      }
+
+      if (!html) {
         dropdown.classList.add('hidden');
         return;
       }
 
-      dropdown.innerHTML = members.map(m => `
-        <div class="mention-item" onclick="mbInsertMention('${m.id}', '${escapeHtml(m.displayName)}')">
-          <img src="${m.avatar}" class="mention-avatar" onerror="this.src='/assets/logo.png'">
-          <div>
-            <div style="font-weight:bold;color:#fff;font-size:13px;">${escapeHtml(m.displayName)}</div>
-            <div style="font-size:11px;color:#b5bac1;">@${escapeHtml(m.username)}</div>
-          </div>
-        </div>
-      `).join('');
+      dropdown.innerHTML = html;
       dropdown.classList.remove('hidden');
     } catch (e) {
       console.error(e);
@@ -2635,7 +2700,7 @@ function mbHandleMentionInput(textarea) {
   }, 300);
 }
 
-function mbInsertMention(userId, displayName) {
+function mbInsertMention(id, name, type) {
   const textarea = $('mb-v2-content-input');
   const textBeforeCursor = textarea.value.slice(0, textarea.selectionStart);
   const textAfterCursor = textarea.value.slice(textarea.selectionStart);
@@ -2643,8 +2708,14 @@ function mbInsertMention(userId, displayName) {
   const match = textBeforeCursor.match(/@([^\s@]*)$/);
   if (!match) return;
 
+  let replacement = '';
+  if (type === 'user') replacement = `<@${id}>`;
+  else if (type === 'role') replacement = `<@&${id}>`;
+  else if (type === 'everyone') replacement = '@everyone';
+  else if (type === 'here') replacement = '@here';
+
   const textToReplace = match[0];
-  const newTextBefore = textBeforeCursor.slice(0, -textToReplace.length) + `<@${userId}>`;
+  const newTextBefore = textBeforeCursor.slice(0, -textToReplace.length) + replacement + ' ';
   
   textarea.value = newTextBefore + textAfterCursor;
   builderState.v2Content = textarea.value;
