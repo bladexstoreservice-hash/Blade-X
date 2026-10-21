@@ -120,6 +120,43 @@ function formatCommentInlineCode(comment: string): string {
 }
 
 // ============================================================
+// Helper: Extract Emoji & Label safely
+// ============================================================
+function applyButtonEmojiAndLabel(btn: ButtonBuilder, rawText: string, explicitEmoji?: string | null) {
+  let text = rawText || '';
+  let emojiStr = explicitEmoji || '';
+
+  // 1. If no explicit emoji, try to extract custom emoji from text
+  if (!emojiStr.trim()) {
+    const customMatch = text.match(/<(a?):([a-zA-Z0-9_]+):(\d{17,20})>/);
+    if (customMatch) {
+      emojiStr = customMatch[0];
+      text = text.replace(customMatch[0], '').trim();
+    }
+  }
+
+  // 2. Apply Emoji
+  if (emojiStr && emojiStr.trim()) {
+    const trimmed = emojiStr.trim();
+    try {
+      const match = trimmed.match(/^<(a?):([a-zA-Z0-9_]+):(\d{17,20})>$/);
+      if (match) {
+        btn.setEmoji({ animated: match[1] === 'a', name: match[2], id: match[3] });
+      } else {
+        btn.setEmoji(trimmed);
+      }
+    } catch (e) {
+      console.warn(`[Blade X][movie] ⚠️ Failed to apply emoji: ${trimmed}`, e);
+    }
+  }
+
+  // 3. Apply Label (discord requires at least one of label or emoji, so we only set it if it exists)
+  if (text) {
+    btn.setLabel(text.slice(0, 80));
+  }
+}
+
+// ============================================================
 // Thanks card
 // ============================================================
 function buildThanksCard(
@@ -175,13 +212,15 @@ function buildThanksCard(
   if (reviewUrl) {
     container.addSeparatorComponents(new SeparatorBuilder().setDivider(false).setSpacing(1));
     const btn = new ButtonBuilder()
-      .setLabel(getText('movie_night.thanks.button', {}, 'عرض تقييمي'))
       .setStyle(ButtonStyle.Link)
       .setURL(reviewUrl);
-    const btnEmoji = getText('movie_night.thanks.button_emoji', {}, '🔗');
-    if (btnEmoji.trim()) {
-      try { btn.setEmoji(btnEmoji); } catch { /* ignore invalid */ }
-    }
+    
+    applyButtonEmojiAndLabel(
+      btn, 
+      getText('movie_night.thanks.button', {}, 'عرض تقييمي'), 
+      getText('movie_night.thanks.button_emoji', {}, '🔗')
+    );
+    
     container.addActionRowComponents(
       new ActionRowBuilder<ButtonBuilder>().addComponents(btn),
     );
@@ -297,8 +336,8 @@ function buildDmComponents(sessionId: number, hasRating: boolean, hasComment: bo
   if (!hasComment) {
     const btn = new ButtonBuilder()
       .setCustomId(`movie:unified:comment:${sessionId}`)
-      .setLabel(getText('movie_night.dm.comment_button', {}, '✍️ اكتب مراجعتك'))
       .setStyle(ButtonStyle.Secondary);
+    applyButtonEmojiAndLabel(btn, getText('movie_night.dm.comment_button', {}, '✍️ اكتب مراجعتك'));
     rows.push(new ActionRowBuilder<ButtonBuilder>().addComponents(btn));
   }
 
@@ -665,18 +704,21 @@ async function buildUnifiedPanel(sessionId: number, userId: string): Promise<Con
 
   const commentBtn = new ButtonBuilder()
     .setCustomId(`movie:unified:comment:${sessionId}`)
-    .setLabel(
-      comment
-        ? getText('movie_night.draft.comment_edit_btn', {}, '💬 تعديل التعليق')
-        : getText('movie_night.draft.comment_add_btn', {}, '💬 إضافة تعليق (اختياري)'),
-    )
     .setStyle(ButtonStyle.Secondary);
+  
+  applyButtonEmojiAndLabel(
+    commentBtn, 
+    comment
+      ? getText('movie_night.draft.comment_edit_btn', {}, '💬 تعديل التعليق')
+      : getText('movie_night.draft.comment_add_btn', {}, '💬 إضافة تعليق (اختياري)')
+  );
 
   const submitBtn = new ButtonBuilder()
     .setCustomId(`movie:unified:submit:${sessionId}`)
-    .setLabel(getText('movie_night.dm.submit_button', {}, '✅ إرسال التقييم'))
     .setStyle(ButtonStyle.Success)
     .setDisabled(!rating);
+  
+  applyButtonEmojiAndLabel(submitBtn, getText('movie_night.dm.submit_button', {}, '✅ إرسال التقييم'));
 
   container.addActionRowComponents(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu) as any);
   container.addActionRowComponents(new ActionRowBuilder<ButtonBuilder>().addComponents(commentBtn, submitBtn) as any);
