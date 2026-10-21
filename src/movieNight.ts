@@ -20,7 +20,6 @@ import {
   getMovieDraft, upsertMovieDraft, deleteMovieDraft, cleanupOldMovieDrafts,
   setReviewMessageId, getReviewMessageId,
 } from './database.js';
-import { T, C, render } from './texts.js';
 import { getText, getColor } from './textRegistry.js';
 import { getEmoji, starStringFromRegistry } from './emojiRegistry.js';
 import { buildV2Panel, buildV2Payload, isV2Available } from './ui/v2.js';
@@ -101,9 +100,6 @@ function parseSessionId(customId: string): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-// ============================================================
-// Safe inline-code formatting for user comments
-// ============================================================
 function formatCommentInlineCode(comment: string): string {
   const trimmed = comment.trim().slice(0, 800);
   if (!trimmed) return '';
@@ -154,17 +150,13 @@ function buildThanksCard(
   }
 
   container.addTextDisplayComponents(
-    new TextDisplayBuilder().setContent(`## ${getText('movie_night.thanks.title', {}, '✅ تم إرسال تقييمك')}`),
+    new TextDisplayBuilder().setContent(`## ${getText('movie_night.thanks.title', {}, 'تم إرسال تقييمك')}`),
   );
   container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
 
   container.addTextDisplayComponents(
     new TextDisplayBuilder().setContent(
-      getText(
-        'movie_night.thanks.line1',
-        { stars: starString(rating), rating },
-        `${starString(rating)} — **${rating}/5**`,
-      ),
+      getText('movie_night.thanks.line1', { stars: starString(rating), rating }, `${starString(rating)} — **${rating}/5**`),
     ),
   );
   container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
@@ -182,19 +174,21 @@ function buildThanksCard(
 
   if (reviewUrl) {
     container.addSeparatorComponents(new SeparatorBuilder().setDivider(false).setSpacing(1));
+    const btn = new ButtonBuilder()
+      .setLabel(getText('movie_night.thanks.button', {}, 'عرض تقييمي'))
+      .setStyle(ButtonStyle.Link)
+      .setURL(reviewUrl);
+    const btnEmoji = getText('movie_night.thanks.button_emoji', {}, '🔗');
+    if (btnEmoji.trim()) {
+      try { btn.setEmoji(btnEmoji); } catch { /* ignore invalid */ }
+    }
     container.addActionRowComponents(
-      new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder()
-          .setLabel(getText('movie_night.thanks.button', {}, 'عرض تقييمي'))
-          .setEmoji('🔗')
-          .setStyle(ButtonStyle.Link)
-          .setURL(reviewUrl),
-      ),
+      new ActionRowBuilder<ButtonBuilder>().addComponents(btn),
     );
   }
 
   container.addTextDisplayComponents(
-    new TextDisplayBuilder().setContent(`-# ${config.botName} · Movie Night`),
+    new TextDisplayBuilder().setContent(getText('movie_night.thanks.footer', { botName: config.botName }, `-# ${config.botName} · Movie Night`)),
   );
 
   return { container, files };
@@ -262,18 +256,18 @@ function buildDmStartCard(
     if (hasRating && !hasComment) {
       container.addTextDisplayComponents(
         new TextDisplayBuilder().setContent(
-          `✅ **تم تسجيل تقييمك:** ${starString(rating!)} **${rating}/5**\n📝 اكتب مراجعتك بالزر أدناه.`,
+          getText('movie_night.dm.partial_rating', { stars: starString(rating!), rating: rating! }, `✅ **تم تسجيل تقييمك:** ${starString(rating!)} **${rating}/5**\n📝 اكتب مراجعتك بالزر أدناه.`),
         ),
       );
     } else if (hasComment && !hasRating) {
       container.addTextDisplayComponents(
-        new TextDisplayBuilder().setContent(`✅ **تم تسجيل مراجعتك.**\n⭐ قيّم الفيلم من القائمة أدناه.`),
+        new TextDisplayBuilder().setContent(getText('movie_night.dm.partial_comment', {}, '✅ **تم تسجيل مراجعتك.**\n⭐ قيّم الفيلم من القائمة أدناه.')),
       );
     }
   }
 
   container.addTextDisplayComponents(
-    new TextDisplayBuilder().setContent(`-# ${config.botName} · Movie Night`),
+    new TextDisplayBuilder().setContent(getText('movie_night.dm.footer', { botName: config.botName }, `-# ${config.botName} · Movie Night`)),
   );
 
   return { container, files, hasComment, hasRating };
@@ -294,7 +288,7 @@ function buildDmComponents(sessionId: number, hasRating: boolean, hasComment: bo
     );
     const menu = new StringSelectMenuBuilder()
       .setCustomId(`movie:unified:stars:${sessionId}`)
-      .setPlaceholder('⭐ اختر تقييمك (1-5)')
+      .setPlaceholder(getText('movie_night.dm.select_placeholder', {}, '⭐ اختر تقييمك (1-5)'))
       .setMinValues(1).setMaxValues(1)
       .addOptions(opts);
     rows.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu));
@@ -408,7 +402,7 @@ async function ensureMainMessageAndThread(c: Client, sessionId: number): Promise
       accentColor: getColor('color.movie', 0xe91e63),
       title: getText('movie_night.thread.starter', { movie: session.movie_name }, `🎬 ${session.movie_name}`),
       imageUrl: announceImage,
-      footerText: 'Blade X · Movie Night',
+      footerText: getText('movie_night.thread.footer', { botName: config.botName }, `${config.botName} · Movie Night`),
     });
 
     const mainMsg = await channel.send({
@@ -417,7 +411,7 @@ async function ensureMainMessageAndThread(c: Client, sessionId: number): Promise
       allowedMentions: { parse: [] },
     });
 
-    const threadName = render(T('text.movie.thread.title', "Tonight's Movie Review — {movie}"), { movie: session.movie_name }).slice(0, 100);
+    const threadName = getText('movie_night.thread.title', { movie: session.movie_name }, "Tonight's Movie Review — {movie}").slice(0, 100);
     const thread = await mainMsg.startThread({
       name: threadName,
       autoArchiveDuration: 60,
@@ -426,9 +420,9 @@ async function ensureMainMessageAndThread(c: Client, sessionId: number): Promise
 
     const summaryContainer = buildV2Panel({
       accentColor: getColor('color.movie', 0xe91e63),
-      title: `🎬 ${session.movie_name}`,
-      description: getText('movie_night.summary.waiting', {}, '⏳ في انتظار أول تقييم...'),
-      footerText: 'Blade X · Movie Night',
+      title: getText('movie_night.thread.summary_title', { movie: session.movie_name }, `🎬 ${session.movie_name}`),
+      description: getText('movie_night.thread.waiting', {}, '⏳ في انتظار أول تقييم...'),
+      footerText: getText('movie_night.thread.footer', { botName: config.botName }, `${config.botName} · Movie Night`),
     });
 
     const summary = await thread.send(buildV2Payload(summaryContainer) as any);
@@ -439,7 +433,7 @@ async function ensureMainMessageAndThread(c: Client, sessionId: number): Promise
 }
 
 // ============================================================
-// Summary — average only
+// Summary
 // ============================================================
 async function updateSummary(c: Client, sessionId: number): Promise<void> {
   const session = await getMovieSession(sessionId);
@@ -468,7 +462,7 @@ async function updateSummary(c: Client, sessionId: number): Promise<void> {
 
     const container = buildV2Panel({
       accentColor: getColor('color.movie', 0xe91e63),
-      title: `🎬 ${session.movie_name}`,
+      title: getText('movie_night.thread.summary_title', { movie: session.movie_name }, `🎬 ${session.movie_name}`),
       sections: [
         {
           text: getText(
@@ -480,7 +474,7 @@ async function updateSummary(c: Client, sessionId: number): Promise<void> {
       ],
       imageUrl,
       imageDescription: 'Star rating',
-      footerText: 'Blade X · Movie Night',
+      footerText: getText('movie_night.thread.footer', { botName: config.botName }, `${config.botName} · Movie Night`),
     });
 
     await msg.edit({ ...(buildV2Payload(container) as any), files });
@@ -524,7 +518,9 @@ async function postReviewToThread(
     container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
 
     container.addTextDisplayComponents(
-      new TextDisplayBuilder().setContent(`${starString(rating)} — **${rating}/5**`),
+      new TextDisplayBuilder().setContent(
+        getText('movie_night.review.rating', { stars: starString(rating), rating }, `${starString(rating)} — **${rating}/5**`),
+      ),
     );
 
     if (comment && comment.trim()) {
@@ -536,7 +532,9 @@ async function postReviewToThread(
     }
 
     container.addTextDisplayComponents(
-      new TextDisplayBuilder().setContent(`-# ${session.movie_name} · ${config.botName}`),
+      new TextDisplayBuilder().setContent(
+        getText('movie_night.review.footer', { movie: session.movie_name, botName: config.botName }, `-# ${session.movie_name} · ${config.botName}`),
+      ),
     );
 
     const sent = await thread.send({
@@ -562,20 +560,20 @@ export async function startMovieSession(
 
   const voiceChannelId = getSetting('movie_voice_channel_id');
   const reviewsChannelId = getSetting('movie_reviews_channel_id');
-  if (!voiceChannelId) return { error: '❌ قناة السينما الصوتية غير مضبوطة.' };
-  if (!reviewsChannelId) return { error: '❌ قناة المراجعات النصية غير مضبوطة.' };
+  if (!voiceChannelId) return { error: getText('movie_night.error.no_voice_channel', {}, '❌ قناة السينما الصوتية غير مضبوطة.') };
+  if (!reviewsChannelId) return { error: getText('movie_night.error.no_reviews_channel', {}, '❌ قناة المراجعات النصية غير مضبوطة.') };
 
   const guild = client.guilds.cache.get(config.guildId);
-  if (!guild) return { error: '❌ السيرفر غير موجود.' };
+  if (!guild) return { error: getText('movie_night.error.no_guild', {}, '❌ السيرفر غير موجود.') };
   const voiceChannel = guild.channels.cache.get(voiceChannelId);
-  if (!voiceChannel) return { error: '❌ قناة السينما غير موجودة.' };
+  if (!voiceChannel) return { error: getText('movie_night.error.voice_channel_missing', {}, '❌ قناة السينما غير موجودة.') };
   if (voiceChannel.type !== ChannelType.GuildVoice && voiceChannel.type !== ChannelType.GuildStageVoice) {
-    return { error: '❌ القناة المحددة ليست قناة صوتية.' };
+    return { error: getText('movie_night.error.not_voice_channel', {}, '❌ القناة المحددة ليست قناة صوتية.') };
   }
   const members = [...voiceChannel.members.values()].filter(m => !m.user.bot);
-  if (members.length === 0) return { error: '⚠️ لا يوجد أعضاء في قناة السينما.' };
+  if (members.length === 0) return { error: getText('movie_night.error.no_members', {}, '⚠️ لا يوجد أعضاء في قناة السينما.') };
   const active = await getActiveMovieSession();
-  if (active) return { error: `⚠️ توجد جلسة مفتوحة بالفعل: **${active.movie_name}**.` };
+  if (active) return { error: getText('movie_night.error.active_session_exists', { movie: active.movie_name }, `⚠️ توجد جلسة مفتوحة بالفعل: **${active.movie_name}**.`) };
 
   const sessionId = await createMovieSession(movieName, voiceChannelId, reviewsChannelId, createdBy);
   await ensureMainMessageAndThread(client, sessionId);
@@ -628,11 +626,17 @@ async function buildUnifiedPanel(sessionId: number, userId: string): Promise<Con
   );
   container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
 
-  const starsLine = rating ? starString(rating) : '— لم تختر بعد —';
-  const commentLine = comment ? `**💬 تعليقك:** ${comment.slice(0, 200)}` : '*لا يوجد تعليق.*';
+  const starsLine = rating
+    ? starString(rating)
+    : getText('movie_night.draft.no_rating_yet', {}, '— لم تختر بعد —');
+  const commentLine = comment
+    ? getText('movie_night.draft.comment_line', { comment: comment.slice(0, 200) }, `**💬 تعليقك:** ${comment.slice(0, 200)}`)
+    : getText('movie_night.draft.no_comment', {}, '*لا يوجد تعليق.*');
 
   container.addTextDisplayComponents(
-    new TextDisplayBuilder().setContent(`**⭐ تقييمك:** ${starsLine}\n${commentLine}`),
+    new TextDisplayBuilder().setContent(
+      getText('movie_night.draft.rating_line', { stars: starsLine, comment_line: commentLine }, `**⭐ تقييمك:** ${starsLine}\n${commentLine}`),
+    ),
   );
 
   container.addTextDisplayComponents(
@@ -649,15 +653,23 @@ async function buildUnifiedPanel(sessionId: number, userId: string): Promise<Con
       .setDefault(rating === n),
   );
 
+  const selectPlaceholder = rating
+    ? getText('movie_night.draft.select_current', { rating }, `⭐ التقييم الحالي: ${rating}/5`)
+    : getText('movie_night.draft.select_prompt', {}, '⭐ اختر تقييمك (1-5)');
+
   const menu = new StringSelectMenuBuilder()
     .setCustomId(`movie:unified:stars:${sessionId}`)
-    .setPlaceholder(rating ? `⭐ التقييم الحالي: ${rating}/5` : '⭐ اختر تقييمك (1-5)')
+    .setPlaceholder(selectPlaceholder)
     .setMinValues(1).setMaxValues(1)
     .addOptions(opts);
 
   const commentBtn = new ButtonBuilder()
     .setCustomId(`movie:unified:comment:${sessionId}`)
-    .setLabel(comment ? '💬 تعديل التعليق' : '💬 إضافة تعليق (اختياري)')
+    .setLabel(
+      comment
+        ? getText('movie_night.draft.comment_edit_btn', {}, '💬 تعديل التعليق')
+        : getText('movie_night.draft.comment_add_btn', {}, '💬 إضافة تعليق (اختياري)'),
+    )
     .setStyle(ButtonStyle.Secondary);
 
   const submitBtn = new ButtonBuilder()
@@ -670,7 +682,7 @@ async function buildUnifiedPanel(sessionId: number, userId: string): Promise<Con
   container.addActionRowComponents(new ActionRowBuilder<ButtonBuilder>().addComponents(commentBtn, submitBtn) as any);
 
   container.addTextDisplayComponents(
-    new TextDisplayBuilder().setContent(`-# ${config.botName} · Movie Night`),
+    new TextDisplayBuilder().setContent(getText('movie_night.draft.footer', { botName: config.botName }, `-# ${config.botName} · Movie Night`)),
   );
 
   return container;
@@ -681,20 +693,20 @@ async function handleStart(interaction: ButtonInteraction): Promise<void> {
   const session = await getMovieSession(sessionId);
 
   if (!session) {
-    await interaction.reply({ content: '❌ الجلسة غير موجودة.', flags: MessageFlags.Ephemeral });
+    await interaction.reply({ content: getText('movie_night.error.session_not_found', {}, '❌ الجلسة غير موجودة.'), flags: MessageFlags.Ephemeral });
     return;
   }
   if (session.status !== 'open') {
-    await interaction.reply({ content: '🔒 الجلسة أُغلقت.', flags: MessageFlags.Ephemeral });
+    await interaction.reply({ content: getText('movie_night.error.session_closed', {}, '🔒 الجلسة أُغلقت.'), flags: MessageFlags.Ephemeral });
     return;
   }
   if (!await isMovieRecipient(sessionId, interaction.user.id)) {
-    await interaction.reply({ content: '❌ لست مشاركًا مؤهلًا.', flags: MessageFlags.Ephemeral });
+    await interaction.reply({ content: getText('movie_night.error.not_recipient', {}, '❌ لست مشاركًا مؤهلًا.'), flags: MessageFlags.Ephemeral });
     return;
   }
   const existing = await getMovieRatingFull(sessionId, interaction.user.id);
   if ((existing?.rating ?? 0) > 0) {
-    await interaction.reply({ content: '⚠️ قيّمت هذا الفيلم بالفعل.', flags: MessageFlags.Ephemeral });
+    await interaction.reply({ content: getText('movie_night.error.already_rated', {}, '⚠️ قيّمت هذا الفيلم بالفعل.'), flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -713,13 +725,13 @@ async function handleStarsSelect(interaction: StringSelectMenuInteraction): Prom
   const session = await getMovieSession(sessionId);
 
   if (!session || session.status !== 'open') {
-    await interaction.reply({ content: '🔒 الجلسة مغلقة.', flags: MessageFlags.Ephemeral });
+    await interaction.reply({ content: getText('movie_night.error.session_closed_simple', {}, '🔒 الجلسة مغلقة.'), flags: MessageFlags.Ephemeral });
     return;
   }
 
   const rating = parseRatingValue(interaction.values[0]);
   if (rating === null) {
-    await interaction.reply({ content: '❌ قيمة غير صالحة.', flags: MessageFlags.Ephemeral });
+    await interaction.reply({ content: getText('movie_night.error.invalid_rating', {}, '❌ قيمة غير صالحة.'), flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -738,7 +750,7 @@ async function handleCommentButton(interaction: ButtonInteraction): Promise<void
   const session = await getMovieSession(sessionId);
 
   if (!session || session.status !== 'open') {
-    await interaction.reply({ content: '🔒 الجلسة مغلقة.', flags: MessageFlags.Ephemeral });
+    await interaction.reply({ content: getText('movie_night.error.session_closed_simple', {}, '🔒 الجلسة مغلقة.'), flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -746,15 +758,15 @@ async function handleCommentButton(interaction: ButtonInteraction): Promise<void
 
   const modal = new ModalBuilder()
     .setCustomId(`movie:unified:commentmodal:${sessionId}`)
-    .setTitle('💬 اكتب تعليقك (اختياري)');
+    .setTitle(getText('movie_night.modal.title', {}, '💬 اكتب تعليقك (اختياري)'));
 
   const input = new TextInputBuilder()
     .setCustomId('comment')
-    .setLabel('تعليقك على الفيلم')
+    .setLabel(getText('movie_night.modal.label', {}, 'تعليقك على الفيلم'))
     .setStyle(TextInputStyle.Paragraph)
     .setMaxLength(800)
     .setRequired(false)
-    .setPlaceholder('اكتب رأيك... (اتركه فارغًا لتخطي التعليق)')
+    .setPlaceholder(getText('movie_night.modal.placeholder', {}, 'اكتب رأيك... (اتركه فارغًا لتخطي التعليق)'))
     .setValue(draft?.comment ?? '');
 
   modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
@@ -766,7 +778,7 @@ async function handleCommentModal(interaction: any): Promise<void> {
   const session = await getMovieSession(sessionId);
 
   if (!session || session.status !== 'open') {
-    await interaction.reply({ content: '🔒 الجلسة مغلقة.', flags: MessageFlags.Ephemeral });
+    await interaction.reply({ content: getText('movie_night.error.session_closed_simple', {}, '🔒 الجلسة مغلقة.'), flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -774,7 +786,9 @@ async function handleCommentModal(interaction: any): Promise<void> {
   await upsertMovieDraft(interaction.user.id, sessionId, { comment: comment || null });
 
   await interaction.reply({
-    content: comment ? '✅ تم حفظ التعليق.' : 'ℹ️ لم تكتب تعليقًا.',
+    content: comment
+      ? getText('movie_night.success.comment_saved', {}, '✅ تم حفظ التعليق.')
+      : getText('movie_night.success.no_comment', {}, 'ℹ️ لم تكتب تعليقًا.'),
     flags: MessageFlags.Ephemeral,
   });
 }
@@ -784,28 +798,28 @@ async function handleSubmit(interaction: ButtonInteraction): Promise<void> {
   const session = await getMovieSession(sessionId);
 
   if (!session) {
-    await interaction.reply({ content: '❌ الجلسة غير موجودة.', flags: MessageFlags.Ephemeral });
+    await interaction.reply({ content: getText('movie_night.error.session_not_found', {}, '❌ الجلسة غير موجودة.'), flags: MessageFlags.Ephemeral });
     return;
   }
   if (session.status !== 'open') {
-    await interaction.reply({ content: '🔒 الجلسة أُغلقت.', flags: MessageFlags.Ephemeral });
+    await interaction.reply({ content: getText('movie_night.error.session_closed', {}, '🔒 الجلسة أُغلقت.'), flags: MessageFlags.Ephemeral });
     return;
   }
   if (!await isMovieRecipient(sessionId, interaction.user.id)) {
-    await interaction.reply({ content: '❌ لست مشاركًا مؤهلًا.', flags: MessageFlags.Ephemeral });
+    await interaction.reply({ content: getText('movie_night.error.not_recipient', {}, '❌ لست مشاركًا مؤهلًا.'), flags: MessageFlags.Ephemeral });
     return;
   }
 
   const existing = await getMovieRatingFull(sessionId, interaction.user.id);
   if ((existing?.rating ?? 0) > 0) {
-    await interaction.reply({ content: '⚠️ قيّمت الفيلم بالفعل.', flags: MessageFlags.Ephemeral });
+    await interaction.reply({ content: getText('movie_night.error.rating_already_submitted', {}, '⚠️ قيّمت الفيلم بالفعل.'), flags: MessageFlags.Ephemeral });
     await deleteMovieDraft(interaction.user.id, sessionId);
     return;
   }
 
   const draft = await getMovieDraft(interaction.user.id, sessionId);
   if (!draft || draft.rating < 1 || draft.rating > 5) {
-    await interaction.reply({ content: '❌ اختر تقييمًا أولًا.', flags: MessageFlags.Ephemeral });
+    await interaction.reply({ content: getText('movie_night.error.no_rating_selected', {}, '❌ اختر تقييمًا أولًا.'), flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -844,7 +858,7 @@ async function handleSubmit(interaction: ButtonInteraction): Promise<void> {
   } catch (e) {
     console.error('[Blade X][movie] ❌ interaction.update failed:', e);
     await interaction.followUp({
-      content: '✅ تم استلام تقييمك، لكن تعذّر عرض الصورة.',
+      content: getText('movie_night.success.image_fallback', {}, '✅ تم استلام تقييمك، لكن تعذّر عرض الصورة.'),
       flags: MessageFlags.Ephemeral,
     }).catch(() => {});
   }
@@ -944,7 +958,7 @@ export function registerMovieNight(c: Client): void {
     } catch (e) {
       console.error('[Blade X] ❌ movie error:', e);
       if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
-        await interaction.reply({ content: '❌ حدث خطأ.', flags: MessageFlags.Ephemeral }).catch(() => {});
+        await interaction.reply({ content: getText('movie_night.error.generic', {}, '❌ حدث خطأ.'), flags: MessageFlags.Ephemeral }).catch(() => {});
       }
     }
   });

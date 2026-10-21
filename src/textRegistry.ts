@@ -4,9 +4,6 @@
 import { dbClient } from './database.js';
 import { config } from './config.js';
 
-// ============================================================
-// Types
-// ============================================================
 export interface TextDef {
   key: string;
   category: string;
@@ -32,26 +29,81 @@ export const CATEGORY_LABELS: Record<string, string> = {
   builder: '🛠️ Message Builder',
 };
 
-// ============================================================
-// Master registry — explicit entries
-// ============================================================
 export const TEXT_REGISTRY: TextDef[] = [
-  // ===== Movie Night =====
+  // ===== Movie Night — DM Start Card =====
+  { key: 'movie_night.dm.title', category: 'movie_night', description: 'عنوان رسالة بدء التقييم (DM)', defaultValue: '🎬 {movie}', variables: ['movie'], componentType: 'text' },
+  { key: 'movie_night.dm.instructions_ar', category: 'movie_night', description: 'تعليمات عربية في DM', defaultValue: '**فيلم الليلة: {movie}**\n\nشكرًا لمشاركتك في ليلة السينما! قيّم الفيلم من نجمة واحدة إلى خمس نجوم، ويمكنك إضافة تعليق على تجربتك.', variables: ['movie'], componentType: 'text' },
+  { key: 'movie_night.dm.instructions_en', category: 'movie_night', description: 'تعليمات إنجليزية في DM', defaultValue: "**Tonight's movie: {movie}**\n\nThanks for joining! Rate from 1 to 5 stars.", variables: ['movie'], componentType: 'text' },
+  { key: 'movie_night.dm.partial_rating', category: 'movie_night', description: 'رسالة عند اختيار التقييم فقط (بدون تعليق)', defaultValue: '✅ **تم تسجيل تقييمك:** {stars} **{rating}/5**\n📝 اكتب مراجعتك بالزر أدناه.', variables: ['stars', 'rating'], componentType: 'text' },
+  { key: 'movie_night.dm.partial_comment', category: 'movie_night', description: 'رسالة عند كتابة تعليق فقط (بدون تقييم)', defaultValue: '✅ **تم تسجيل مراجعتك.**\n⭐ قيّم الفيلم من القائمة أدناه.', componentType: 'text' },
+  { key: 'movie_night.dm.select_placeholder', category: 'movie_night', description: 'نص قائمة اختيار التقييم (DM)', defaultValue: '⭐ اختر تقييمك (1-5)', componentType: 'text' },
+  { key: 'movie_night.dm.comment_button', category: 'movie_night', description: 'زر كتابة المراجعة', defaultValue: '✍️ اكتب مراجعتك', componentType: 'button_label', maxLength: 80 },
+  { key: 'movie_night.dm.submit_button', category: 'movie_night', description: 'زر إرسال التقييم', defaultValue: '✅ إرسال التقييم', componentType: 'button_label', maxLength: 80 },
+  { key: 'movie_night.dm.footer', category: 'movie_night', description: 'فوتر رسالة DM', defaultValue: '-# {botName} · Movie Night', variables: ['botName'], componentType: 'text' },
+
+  // ===== Movie Night — Thanks Card =====
   { key: 'movie_night.thanks.title', category: 'movie_night', description: 'عنوان رسالة الشكر', defaultValue: 'تم إرسال تقييمك', componentType: 'text' },
   { key: 'movie_night.thanks.line1', category: 'movie_night', description: 'سطر النجوم والدرجة', defaultValue: '{stars} — **{rating}/5**', variables: ['stars', 'rating'], componentType: 'text' },
   { key: 'movie_night.thanks.movie', category: 'movie_night', description: 'سطر اسم الفيلم', defaultValue: '🎬 **الفيلم:** {movie}', variables: ['movie'], componentType: 'text' },
   { key: 'movie_night.thanks.closing', category: 'movie_night', description: 'رسالة الشكر الختامية', defaultValue: 'شكرًا لمشاركتك! 🤍', componentType: 'text' },
   { key: 'movie_night.thanks.button', category: 'movie_night', description: 'نص زر "عرض تقييمي"', defaultValue: 'عرض تقييمي', componentType: 'button_label', maxLength: 80 },
-  { key: 'movie_night.dm.title', category: 'movie_night', description: 'عنوان رسالة بدء التقييم (DM)', defaultValue: '🎬 {movie}', variables: ['movie'], componentType: 'text' },
-  { key: 'movie_night.dm.instructions_ar', category: 'movie_night', description: 'تعليمات عربية في DM', defaultValue: '**فيلم الليلة: {movie}**\n\nشكرًا لمشاركتك في ليلة السينما! قيّم الفيلم من نجمة واحدة إلى خمس نجوم، ويمكنك إضافة تعليق على تجربتك.', variables: ['movie'], componentType: 'text' },
-  { key: 'movie_night.dm.instructions_en', category: 'movie_night', description: 'تعليمات إنجليزية في DM', defaultValue: "**Tonight's movie: {movie}**\n\nThanks for joining! Rate from 1 to 5 stars.", variables: ['movie'], componentType: 'text' },
-  { key: 'movie_night.dm.comment_button', category: 'movie_night', description: 'زر كتابة المراجعة', defaultValue: '✍️ اكتب مراجعتك', componentType: 'button_label', maxLength: 80 },
-  { key: 'movie_night.dm.submit_button', category: 'movie_night', description: 'زر إرسال التقييم', defaultValue: '✅ إرسال التقييم', componentType: 'button_label', maxLength: 80 },
+  { key: 'movie_night.thanks.button_emoji', category: 'movie_night', description: 'إيموجي زر عرض التقييم', defaultValue: '🔗', componentType: 'text', maxLength: 60 },
+  { key: 'movie_night.thanks.footer', category: 'movie_night', description: 'فوتر رسالة الشكر', defaultValue: '-# {botName} · Movie Night', variables: ['botName'], componentType: 'text' },
+
+  // ===== Movie Night — Thread & Summary =====
+  { key: 'movie_night.thread.title', category: 'movie_night', description: 'عنوان Thread المراجعات', defaultValue: "Tonight's Movie Review — {movie}", variables: ['movie'], componentType: 'text', maxLength: 100 },
+  { key: 'movie_night.thread.starter', category: 'movie_night', description: 'عنوان لوحة بداية المراجعة', defaultValue: '🎬 {movie}', variables: ['movie'], componentType: 'text' },
+  { key: 'movie_night.thread.waiting', category: 'movie_night', description: 'نص الانتظار في الملخص', defaultValue: '⏳ في انتظار أول تقييم...', componentType: 'text' },
+  { key: 'movie_night.thread.summary_title', category: 'movie_night', description: 'عنوان رسالة ملخص التقييمات', defaultValue: '🎬 {movie}', variables: ['movie'], componentType: 'text' },
+  { key: 'movie_night.thread.footer', category: 'movie_night', description: 'فوتر رسائل Thread والملخص', defaultValue: '{botName} · Movie Night', variables: ['botName'], componentType: 'text' },
+  { key: 'movie_night.summary.average', category: 'movie_night', description: 'سطر المتوسط', defaultValue: '**⭐ المتوسط:** {average}', variables: ['average'], componentType: 'text' },
+
+  // ===== Movie Night — Review Card =====
+  { key: 'movie_night.review.rating', category: 'movie_night', description: 'سطر التقييم في بطاقة المراجعة', defaultValue: '{stars} — **{rating}/5**', variables: ['stars', 'rating'], componentType: 'text' },
+  { key: 'movie_night.review.footer', category: 'movie_night', description: 'فوتر بطاقة المراجعة', defaultValue: '-# {movie} · {botName}', variables: ['movie', 'botName'], componentType: 'text' },
+
+  // ===== Movie Night — Draft / Unified Panel =====
   { key: 'movie_night.draft.title', category: 'movie_night', description: 'عنوان لوحة المسودة', defaultValue: '🎬 {movie}', variables: ['movie'], componentType: 'text' },
   { key: 'movie_night.draft.helper', category: 'movie_night', description: 'نص مساعدة لوحة المسودة', defaultValue: 'اختر عدد النجوم، أضف تعليقًا (اختياري)، ثم اضغط **إرسال**.', componentType: 'text' },
-  { key: 'movie_night.thread.starter', category: 'movie_night', description: 'عنوان Thread starter', defaultValue: '🎬 {movie}', variables: ['movie'], componentType: 'text' },
-  { key: 'movie_night.summary.waiting', category: 'movie_night', description: 'نص الانتظار في الملخص', defaultValue: '⏳ في انتظار أول تقييم...', componentType: 'text' },
-  { key: 'movie_night.summary.average', category: 'movie_night', description: 'سطر المتوسط', defaultValue: '**⭐ المتوسط:** {average}', variables: ['average'], componentType: 'text' },
+  { key: 'movie_night.draft.rating_line', category: 'movie_night', description: 'سطر يعرض التقييم الحالي', defaultValue: '**⭐ تقييمك:** {stars}\n{comment_line}', variables: ['stars', 'comment_line'], componentType: 'text' },
+  { key: 'movie_night.draft.no_rating_yet', category: 'movie_night', description: 'نص عندما لا يتم اختيار تقييم بعد', defaultValue: '— لم تختر بعد —', componentType: 'text' },
+  { key: 'movie_night.draft.comment_line', category: 'movie_night', description: 'سطر التعليق الحالي', defaultValue: '**💬 تعليقك:** {comment}', variables: ['comment'], componentType: 'text' },
+  { key: 'movie_night.draft.no_comment', category: 'movie_night', description: 'نص عندما لا يوجد تعليق', defaultValue: '*لا يوجد تعليق.*', componentType: 'text' },
+  { key: 'movie_night.draft.select_current', category: 'movie_night', description: 'placeholder القائمة عندما يوجد تقييم', defaultValue: '⭐ التقييم الحالي: {rating}/5', variables: ['rating'], componentType: 'text' },
+  { key: 'movie_night.draft.select_prompt', category: 'movie_night', description: 'placeholder القائمة عند عدم وجود تقييم', defaultValue: '⭐ اختر تقييمك (1-5)', componentType: 'text' },
+  { key: 'movie_night.draft.comment_edit_btn', category: 'movie_night', description: 'زر تعديل التعليق (بعد كتابته)', defaultValue: '💬 تعديل التعليق', componentType: 'button_label', maxLength: 80 },
+  { key: 'movie_night.draft.comment_add_btn', category: 'movie_night', description: 'زر إضافة تعليق (قبل كتابته)', defaultValue: '💬 إضافة تعليق (اختياري)', componentType: 'button_label', maxLength: 80 },
+  { key: 'movie_night.draft.footer', category: 'movie_night', description: 'فوتر لوحة المسودة', defaultValue: '-# {botName} · Movie Night', variables: ['botName'], componentType: 'text' },
+
+  // ===== Movie Night — Modal =====
+  { key: 'movie_night.modal.title', category: 'movie_night', description: 'عنوان النافذة المنبثقة لكتابة التعليق', defaultValue: '💬 اكتب تعليقك (اختياري)', componentType: 'text', maxLength: 45 },
+  { key: 'movie_night.modal.label', category: 'movie_night', description: 'اسم حقل التعليق', defaultValue: 'تعليقك على الفيلم', componentType: 'text', maxLength: 45 },
+  { key: 'movie_night.modal.placeholder', category: 'movie_night', description: 'النص الإرشادي داخل حقل التعليق', defaultValue: 'اكتب رأيك... (اتركه فارغًا لتخطي التعليق)', componentType: 'text', maxLength: 100 },
+
+  // ===== Movie Night — Success =====
+  { key: 'movie_night.success.start', category: 'movie_night', description: 'رسالة نجاح بدء الجلسة', defaultValue: '✅ بدأت جلسة **{movie}**.\n📨 أُرسل: **{sent}** / فشل: **{failed}** / الإجمالي: **{total}**\nسيُنشأ Thread عند وصول أول تقييم.', variables: ['movie', 'sent', 'failed', 'total'], componentType: 'ephemeral' },
+  { key: 'movie_night.success.close', category: 'movie_night', description: 'رسالة نجاح إغلاق الجلسة', defaultValue: '✅ تم إغلاق جلسة **{movie}**.', variables: ['movie'], componentType: 'ephemeral' },
+  { key: 'movie_night.success.comment_saved', category: 'movie_night', description: 'رسالة نجاح حفظ التعليق', defaultValue: '✅ تم حفظ التعليق.', componentType: 'ephemeral' },
+  { key: 'movie_night.success.no_comment', category: 'movie_night', description: 'رسالة عند حفظ تعليق فارغ', defaultValue: 'ℹ️ لم تكتب تعليقًا.', componentType: 'ephemeral' },
+  { key: 'movie_night.success.image_fallback', category: 'movie_night', description: 'رسالة عند نجاح التقييم لكن فشل عرض الصورة', defaultValue: '✅ تم استلام تقييمك، لكن تعذّر عرض الصورة.', componentType: 'ephemeral' },
+
+  // ===== Movie Night — Errors =====
+  { key: 'movie_night.error.session_not_found', category: 'movie_night', description: 'الجلسة غير موجودة', defaultValue: '❌ الجلسة غير موجودة.', componentType: 'ephemeral' },
+  { key: 'movie_night.error.session_closed', category: 'movie_night', description: 'الجلسة مغلقة (عند التقييم)', defaultValue: '🔒 الجلسة أُغلقت.', componentType: 'ephemeral' },
+  { key: 'movie_night.error.session_closed_simple', category: 'movie_night', description: 'الجلسة مغلقة (عند التفاعل)', defaultValue: '🔒 الجلسة مغلقة.', componentType: 'ephemeral' },
+  { key: 'movie_night.error.not_recipient', category: 'movie_night', description: 'العضو غير مشارك في الجلسة', defaultValue: '❌ لست مشاركًا مؤهلًا.', componentType: 'ephemeral' },
+  { key: 'movie_night.error.already_rated', category: 'movie_night', description: 'العضو قيّم الفيلم بالفعل', defaultValue: '⚠️ قيّمت هذا الفيلم بالفعل.', componentType: 'ephemeral' },
+  { key: 'movie_night.error.rating_already_submitted', category: 'movie_night', description: 'العضو أرسل التقييم (عند الإرسال)', defaultValue: '⚠️ قيّمت الفيلم بالفعل.', componentType: 'ephemeral' },
+  { key: 'movie_night.error.invalid_rating', category: 'movie_night', description: 'قيمة التقييم غير صالحة', defaultValue: '❌ قيمة غير صالحة.', componentType: 'ephemeral' },
+  { key: 'movie_night.error.no_rating_selected', category: 'movie_night', description: 'لم يتم اختيار تقييم', defaultValue: '❌ اختر تقييمًا أولًا.', componentType: 'ephemeral' },
+  { key: 'movie_night.error.no_voice_channel', category: 'movie_night', description: 'قناة السينما الصوتية غير مضبوطة', defaultValue: '❌ قناة السينما الصوتية غير مضبوطة.', componentType: 'ephemeral' },
+  { key: 'movie_night.error.no_reviews_channel', category: 'movie_night', description: 'قناة المراجعات النصية غير مضبوطة', defaultValue: '❌ قناة المراجعات النصية غير مضبوطة.', componentType: 'ephemeral' },
+  { key: 'movie_night.error.no_guild', category: 'movie_night', description: 'السيرفر غير موجود', defaultValue: '❌ السيرفر غير موجود.', componentType: 'ephemeral' },
+  { key: 'movie_night.error.voice_channel_missing', category: 'movie_night', description: 'قناة السينما غير موجودة', defaultValue: '❌ قناة السينما غير موجودة.', componentType: 'ephemeral' },
+  { key: 'movie_night.error.not_voice_channel', category: 'movie_night', description: 'القناة المحددة ليست صوتية', defaultValue: '❌ القناة المحددة ليست قناة صوتية.', componentType: 'ephemeral' },
+  { key: 'movie_night.error.no_members', category: 'movie_night', description: 'لا يوجد أعضاء في القناة الصوتية', defaultValue: '⚠️ لا يوجد أعضاء في قناة السينما.', componentType: 'ephemeral' },
+  { key: 'movie_night.error.active_session_exists', category: 'movie_night', description: 'توجد جلسة مفتوحة بالفعل', defaultValue: '⚠️ توجد جلسة مفتوحة بالفعل: **{movie}**.', variables: ['movie'], componentType: 'ephemeral' },
+  { key: 'movie_night.error.generic', category: 'movie_night', description: 'خطأ عام في Movie Night', defaultValue: '❌ حدث خطأ.', componentType: 'ephemeral' },
 
   // ===== Media Show =====
   { key: 'media_show.post.error', category: 'media_show', description: 'خطأ عند عدم وجود المنشور', defaultValue: '❌ المنشور غير موجود.', componentType: 'ephemeral' },
@@ -91,8 +143,8 @@ export const TEXT_REGISTRY: TextDef[] = [
   // ===== Welcome System =====
   { key: 'welcome.panel.title', category: 'welcome', description: 'عنوان رسالة الترحيب (يدعم {emoji})', defaultValue: '{emoji} Welcome', variables: ['emoji', 'username', 'displayName', 'server', 'memberCount'], componentType: 'text', maxLength: 256 },
   { key: 'welcome.panel.body', category: 'welcome', description: 'نص الترحيب العام — يُستخدم إذا لم يُعيَّن body_ar أو body_en', defaultValue: '{user} — {phrase}', variables: ['user', 'username', 'displayName', 'server', 'memberCount', 'phrase', 'emoji'], componentType: 'text', maxLength: 2000 },
-  { key: 'welcome.panel.body_ar', category: 'welcome', description: 'النص العربي في رسالة الترحيب (اختياري — يستبدل body)', defaultValue: '', variables: ['user', 'username', 'displayName', 'server', 'memberCount', 'phrase', 'emoji'], componentType: 'text', maxLength: 2000 },
-  { key: 'welcome.panel.body_en', category: 'welcome', description: 'النص الإنجليزي في رسالة الترحيب (اختياري — يستبدل body)', defaultValue: '', variables: ['user', 'username', 'displayName', 'server', 'memberCount', 'phrase', 'emoji'], componentType: 'text', maxLength: 2000 },
+  { key: 'welcome.panel.body_ar', category: 'welcome', description: 'النص العربي في رسالة الترحيب (اختياري)', defaultValue: '', variables: ['user', 'username', 'displayName', 'server', 'memberCount', 'phrase', 'emoji'], componentType: 'text', maxLength: 2000 },
+  { key: 'welcome.panel.body_en', category: 'welcome', description: 'النص الإنجليزي في رسالة الترحيب (اختياري)', defaultValue: '', variables: ['user', 'username', 'displayName', 'server', 'memberCount', 'phrase', 'emoji'], componentType: 'text', maxLength: 2000 },
   { key: 'welcome.panel.footer', category: 'welcome', description: 'فوتر رسالة الترحيب', defaultValue: 'Blade X · Welcome', componentType: 'text', maxLength: 200 },
   { key: 'welcome.sayhi.text', category: 'welcome', description: 'نص رسالة Say Hi', defaultValue: '**{user}** says hi to **{target}** {emoji}', variables: ['user', 'target', 'emoji'], componentType: 'text', maxLength: 1000 },
   { key: 'welcome.sayhi.footer', category: 'welcome', description: 'فوتر Say Hi', defaultValue: 'Blade X · Welcome', componentType: 'text', maxLength: 200 },
@@ -136,7 +188,7 @@ if (TEXT_REGISTRY.length === 0) {
 }
 
 // ============================================================
-// Caches (loaded via initTextRegistry)
+// Caches
 // ============================================================
 interface CacheEntry { value: string; updatedAt: number | null; }
 
@@ -147,16 +199,12 @@ let warnedNotInitialized = false;
 
 function warnNotInit(): void {
   if (!warnedNotInitialized) {
-    console.warn('[Blade X] ⚠️ TextRegistry not initialized — call initTextRegistry() after initDatabase()');
+    console.warn('[Blade X] ⚠️ TextRegistry not initialized — call initTextRegistry()');
     warnedNotInitialized = true;
   }
 }
 
-// ============================================================
-// Init — call after initDatabase()
-// ============================================================
 export async function initTextRegistry(): Promise<void> {
-  // 1. Create tables if missing (idempotent)
   await dbClient.executeMultiple(`
     CREATE TABLE IF NOT EXISTS custom_texts (
       key TEXT PRIMARY KEY,
@@ -172,7 +220,6 @@ export async function initTextRegistry(): Promise<void> {
     );
   `);
 
-  // 2. Load custom_texts cache
   const textRows = await dbClient.execute('SELECT key, value, updated_at FROM custom_texts');
   textsCache = new Map();
   for (const row of textRows.rows) {
@@ -182,7 +229,6 @@ export async function initTextRegistry(): Promise<void> {
     });
   }
 
-  // 3. Load custom_colors cache
   const colorRows = await dbClient.execute('SELECT key, value, updated_at FROM custom_colors');
   colorsCache = new Map();
   for (const row of colorRows.rows) {
@@ -192,7 +238,6 @@ export async function initTextRegistry(): Promise<void> {
     });
   }
 
-  // 4. Discovery from settings (legacy keys)
   const settingsRows = await dbClient.execute(
     "SELECT key, value FROM settings WHERE key LIKE 'text.%' OR key LIKE 'color.%'"
   );
@@ -201,7 +246,6 @@ export async function initTextRegistry(): Promise<void> {
     discoveredFromSettings.set(String(row.key), String(row.value ?? ''));
   }
 
-  // 5. Build FULL_REGISTRY
   FULL_REGISTRY = buildFullRegistryInternal(discoveredFromSettings);
 
   const explicitCount = TEXT_REGISTRY.length;
@@ -210,9 +254,6 @@ export async function initTextRegistry(): Promise<void> {
   console.log(`[Blade X] ✅ Text Registry built: ${FULL_REGISTRY.length} total (${explicitCount} explicit + ${Math.max(0, configCount)} from config + ${settingsCount} from settings)`);
 }
 
-// ============================================================
-// Registry builder (internal — populated once by initTextRegistry)
-// ============================================================
 function inferCategory(key: string): string {
   const parts = key.split('.');
   if (parts.length >= 2) {
@@ -243,14 +284,12 @@ function buildFullRegistryInternal(discoveredFromSettings: Map<string, string>):
   const seen = new Set<string>();
   const result: TextDef[] = [];
 
-  // Explicit entries first
   for (const def of TEXT_REGISTRY) {
     if (seen.has(def.key)) continue;
     seen.add(def.key);
     result.push(def);
   }
 
-  // From config.defaultTexts
   try {
     const defaults = (config?.defaultTexts ?? {}) as Record<string, string>;
     for (const [key, value] of Object.entries(defaults)) {
@@ -269,7 +308,6 @@ function buildFullRegistryInternal(discoveredFromSettings: Map<string, string>):
     console.warn('[Blade X] ⚠️ config.defaultTexts discovery failed:', e);
   }
 
-  // From settings (legacy)
   for (const [key, value] of discoveredFromSettings) {
     if (seen.has(key)) continue;
     seen.add(key);
@@ -286,9 +324,6 @@ function buildFullRegistryInternal(discoveredFromSettings: Map<string, string>):
   return result;
 }
 
-// ============================================================
-// Template resolver
-// ============================================================
 export function resolveTemplate(template: string, vars: Record<string, string | number> = {}): string {
   return template.replace(/\{(\w+)\}/g, (_, k) => {
     const v = vars[k];
@@ -297,9 +332,6 @@ export function resolveTemplate(template: string, vars: Record<string, string | 
   });
 }
 
-// ============================================================
-// Sync readers
-// ============================================================
 export function getText(key: string, vars: Record<string, string | number> = {}, fallback = ''): string {
   const override = textsCache?.get(key);
   const def = FULL_REGISTRY?.find((t) => t.key === key);
@@ -319,9 +351,6 @@ export function getRawText(key: string): string {
   return def?.defaultValue ?? '';
 }
 
-// ============================================================
-// Writers (async)
-// ============================================================
 export async function setText(key: string, value: string, updatedBy?: string): Promise<{ ok: boolean; error?: string }> {
   const def = FULL_REGISTRY?.find((t) => t.key === key);
   if (!def) return { ok: false, error: `المفتاح ${key} غير مسجل` };
@@ -353,9 +382,6 @@ export async function resetText(key: string): Promise<void> {
   }
 }
 
-// ============================================================
-// List APIs
-// ============================================================
 export interface TextRow {
   key: string;
   category: string;
@@ -397,9 +423,6 @@ export function listCategories(): string[] {
   return [...set].sort();
 }
 
-// ============================================================
-// Colors
-// ============================================================
 export function getColor(key: string, fallback?: number): number {
   const def = COLOR_REGISTRY.find((c) => c.key === key);
   const override = colorsCache?.get(key);
@@ -462,9 +485,6 @@ export function listAllColors(): ColorRow[] {
   });
 }
 
-// ============================================================
-// Diagnostics
-// ============================================================
 export function getRegistryDiagnostics(): {
   explicitCount: number;
   totalCount: number;

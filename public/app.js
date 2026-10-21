@@ -2563,6 +2563,7 @@ const pages = {
   texts: { title: 'Text Customizer', subtitle: 'تخصيص النصوص والألوان', fn: pageTexts },
   emojis: { title: 'Emoji Manager', subtitle: 'إدارة الإيموجيات', fn: pageEmojis },
   builder: { title: 'Message Builder', subtitle: 'إنشاء رسائل Discord', fn: pageBuilder },
+    'movie-customizer': { title: 'Movie Night Customizer', subtitle: 'تخصيص رسائل وإيموجيات السينما', fn: pageMovieCustomizer },
   settings: { title: 'Settings', subtitle: 'معلومات النظام', fn: pageSettings },
 };
 
@@ -2758,6 +2759,115 @@ async function init() {
         <div class="btn-row"><button class="btn-primary" onclick="location.reload()">🔄 إعادة المحاولة</button></div>
       </div>`;
   }
+}
+
+// ============================================================
+// Movie Night Customizer
+// ============================================================
+async function pageMovieCustomizer() {
+  contentArea.innerHTML = '<div class="loader">جارٍ تحميل التخصيصات...</div>';
+  try {
+    const data = await api('/api/texts/registry');
+    const movieTexts = data.texts.filter(t => t.category === 'movie_night');
+    
+    const groups = {
+      'بدء الجلسة والدعوة (DM)': movieTexts.filter(t => t.key.includes('dm.')),
+      'رسائل الشكر والتقييم': movieTexts.filter(t => t.key.includes('thanks') || t.key.includes('review')),
+      'الملخص والثريد': movieTexts.filter(t => t.key.includes('thread') || t.key.includes('summary')),
+      'لوحة المسودة': movieTexts.filter(t => t.key.includes('draft')),
+      'النوافذ المنبثقة (Modal)': movieTexts.filter(t => t.key.includes('modal')),
+      'رسائل النجاح': movieTexts.filter(t => t.key.includes('success')),
+      'رسائل الأخطاء': movieTexts.filter(t => t.key.includes('error')),
+    };
+
+    let html = `
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">🎬 Movie Night Customizer</div>
+          <div class="btn-row" style="margin:0">
+            <button class="btn-secondary" onclick="pageMovieCustomizer()">🔄 تحديث</button>
+          </div>
+        </div>
+        <div class="panel-desc">قم بتخصيص جميع النصوص والرسائل والإيموجيات الخاصة بنظام Movie Night. يمكنك استخدام المتغيرات مثل <code>{movie}</code> و <code>{user}</code> و <code>{stars}</code>.</div>
+    `;
+
+    for (const [groupName, texts] of Object.entries(groups)) {
+      if (texts.length === 0) continue;
+      html += `
+        <div class="panel" style="background:var(--bg-elev-2); margin-top:20px">
+          <div class="panel-header"><div class="panel-title" style="font-size:15px">${groupName}</div></div>
+          <table class="table">
+            <thead><tr><th>الوصف</th><th>القيمة (يدعم المتغيرات)</th><th>المتغيرات</th><th>الحالة</th><th></th></tr></thead>
+            <tbody>
+              ${texts.map(t => `
+                <tr>
+                  <td style="font-size:12px">${escapeHtml(t.description)}<br><code style="font-size:10px;color:#8e8e8e">${t.key}</code></td>
+                  <td style="min-width:300px">
+                    <textarea data-movie-text-key="${t.key}" rows="2" style="width:100%; font-family:monospace;">${escapeHtml(t.currentValue)}</textarea>
+                  </td>
+                  <td style="font-size:11px">${t.variables.length > 0 ? t.variables.map(v => `<code>{${v}}</code>`).join(' ') : '—'}</td>
+                  <td>${t.isCustomized ? '<span class="badge success">مُخصَّص</span>' : '<span class="badge muted">افتراضي</span>'}</td>
+                  <td style="white-space:nowrap">
+                    <button class="btn-success" style="padding:5px 10px;font-size:12px" onclick="saveMovieText('${t.key}')">💾</button>
+                    <button class="btn-secondary" style="padding:5px 10px;font-size:12px" onclick="resetMovieText('${t.key}')">↺</button>
+                    <button class="btn-secondary" style="padding:5px 10px;font-size:12px" onclick="previewMovieText('${t.key}')">👁️</button>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+    html += `</div>`;
+    
+    html += `
+      <div id="movie-preview-modal" class="modal-overlay hidden">
+        <div class="modal" style="max-width:600px">
+          <h3 id="movie-preview-title">معاينة الرسالة</h3>
+          <div id="movie-preview-body" style="background:#1e1f22; padding:16px; border-radius:8px; margin-bottom:16px; border-left:4px solid #e91e63; color:#dbdee1; font-family:Tajawal, sans-serif;"></div>
+          <div class="modal-actions">
+            <button class="btn-secondary" onclick="document.getElementById('movie-preview-modal').classList.add('hidden')">إغلاق</button>
+          </div>
+        </div>
+      </div>
+    `;
+
+    contentArea.innerHTML = html;
+  } catch (e) {
+    contentArea.innerHTML = `<div class="panel"><div class="panel-desc" style="color:red">❌ فشل التحميل: ${escapeHtml(e.message)}</div></div>`;
+  }
+}
+
+async function saveMovieText(key) {
+  const input = document.querySelector(`[data-movie-text-key="${key}"]`);
+  if (!input) return;
+  try {
+    await api('/api/texts/registry/save', { method: 'POST', body: JSON.stringify({ key, value: input.value }) });
+    toast('✅ تم الحفظ', 'success'); pageMovieCustomizer();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function resetMovieText(key) {
+  if (!(await confirmModal('تأكيد', 'إعادة النص إلى الافتراضي؟'))) return;
+  try {
+    await api('/api/texts/registry/reset', { method: 'POST', body: JSON.stringify({ key }) });
+    toast('✅ تمت الاستعادة', 'success'); pageMovieCustomizer();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+function previewMovieText(key) {
+  const input = document.querySelector(`[data-movie-text-key="${key}"]`);
+  if (!input) return;
+  let text = input.value;
+  const vars = {
+    movie: 'Inception', user: '<@1234567890>', rating: '5', average: '4.5', stars: '⭐⭐⭐⭐⭐', count: '10', reason: 'Error', sent: '5', failed: '0', total: '5', botName: 'Blade X', comment: 'فيلم رائع!'
+  };
+  text = text.replace(/\{(\w+)\}/g, (match, v) => vars[v] || match);
+  text = escapeHtml(text).replace(/\*\*(.*?)\*\*/g, '<b>$1</b>').replace(/\*(.*?)\*/g, '<i>$1</i>').replace(/\n/g, '<br>');
+  document.getElementById('movie-preview-title').textContent = `معاينة: ${key}`;
+  document.getElementById('movie-preview-body').innerHTML = text;
+  document.getElementById('movie-preview-modal').classList.remove('hidden');
 }
 
 init();
