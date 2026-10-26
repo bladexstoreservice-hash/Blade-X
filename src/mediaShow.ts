@@ -14,6 +14,7 @@ import db, {
   getMediaChannel, isMediaChannel, getMediaPostBySource,
   getMediaPostById, reserveMediaPost, updateMediaPostDisplay,
   updateMediaPostThread, deleteMediaPost, updateMediaPostSeparator,
+  updateMediaPostMediaUrl,
   addMediaReaction, removeMediaReaction, hasMediaReaction, getMediaReactionCount,
   getMediaReactionUsers, getUserMediaPosts, insertMediaFile, getMediaFiles,
   deleteMediaFilesForPost, logActivity,
@@ -42,7 +43,9 @@ function log(level: LogLevel, op: string, ctx: Record<string, unknown> = {}, err
 }
 
 const MAX_ATTACHMENTS = 10;
-const MAX_FILE_BYTES = 24 * 1024 * 1024;
+// ✅ رُفع من 24MB إلى 100MB (Discord Tier 3 max). الخوادم ذات المستوى الأقل
+// سترفض الرفع تلقائيًا في مرحلة الإرسال، وتُبقي رسالة المصدر سليمة.
+const MAX_FILE_BYTES = 100 * 1024 * 1024;
 const MAX_USER_CONTENT = 1900;
 const THREAD_ARCHIVE_MINUTES = 60;
 const LINE_IMAGE_PATH = path.resolve(process.cwd(), 'assets', 'line.png');
@@ -288,13 +291,26 @@ function getArchiveChannel(guild: Guild, client: Client): TextChannel | null {
 // ============================================================
 // Media helpers
 // ============================================================
+// ✅ تحسين التصنيف: يعتمد على MIME أولاً، ثم الامتداد كبديل عند غياب
+// MIME أو كونه عامًّا (octet-stream). لا يُصنّف أي ملف غير صورة/فيديو
+// كوسائط، ولا يقبل صيغًا خطيرة (PDF/ZIP/نصوص) حتى لو كان امتدادها
+// يشبه اسم صورة أو فيديو.
 function isSupportedMedia(att: { contentType: string | null; url: string; size: number; name: string }): {
   type: 'image' | 'video' | null;
 } {
-  const ct = (att.contentType ?? '').toLowerCase();
+  const ct = (att.contentType ?? '').toLowerCase().split(';')[0].trim();
   const name = att.name.toLowerCase();
-  if (ct.startsWith('image/') || /\.(png|jpe?g|gif|webp)$/i.test(name)) return { type: 'image' };
-  if (ct.startsWith('video/') || /\.(mp4|webm|mov|m4v)$/i.test(name)) return { type: 'video' };
+
+  if (ct.startsWith('image/')) return { type: 'image' };
+  if (ct.startsWith('video/')) return { type: 'video' };
+  if (ct.startsWith('audio/')) return { type: null };
+
+  const genericMimes = new Set(['application/octet-stream', 'binary/octet-stream', '']);
+  if (ct && !genericMimes.has(ct)) return { type: null };
+
+  if (/\.(png|jpe?g|gif|webp|heic|heif|bmp|avif)$/i.test(name)) return { type: 'image' };
+  if (/\.(mp4|webm|mov|m4v|mkv)$/i.test(name)) return { type: 'video' };
+
   return { type: null };
 }
 
@@ -373,7 +389,6 @@ async function buildAuthorTitle(
   return title.trim() || userMention;
 }
 
-// ✅ ASYNC — كانت متزامنة وتستدعي getUserMediaPosts
 async function getAuthorPostCount(authorId: string, channelId: string): Promise<number> {
   try {
     const posts = await getUserMediaPosts(authorId, 500);
@@ -386,7 +401,6 @@ async function buildReactorsLine(
   post: MediaPost, channel: MediaChannel, count: number,
 ): Promise<string> {
   if (count === 0) return 'لا يوجد متفاعلون بعد';
-  // ✅ await مستعاد
   const userIds = await getMediaReactionUsers(post.id, 10);
   if (userIds.length === 0) return 'لا يوجد متفاعلون بعد';
   const emoji = (await resolveEmojiTextAsync(client, guild, channel.reaction_emoji, 'reaction_emoji')) || DEFAULT_EMOJI.reaction;
@@ -479,7 +493,6 @@ async function buildPostContainer(
   container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
 
   const reactorsLine = await buildReactorsLine(client, guild, post, channel, reactionCount);
-  // ✅ await مستعاد
   const postCount = post.source_author_id ? await getAuthorPostCount(post.source_author_id, post.display_channel_id) : 0;
   const timeAgo = `<t:${Math.floor(post.created_at / 1000)}:R>`;
   const footerText = `${reactorsLine}\n-# ${postCount} posts · ${timeAgo}`;
@@ -513,7 +526,6 @@ async function getMediaForPost(post: MediaPost, guild: Guild | null): Promise<{
   let usedDisk = false;
 
   let dbFiles: MediaFileRow[] = [];
-  // ✅ await مستعاد
   try { dbFiles = await getMediaFiles(post.id); }
   catch (e) { log('warn', 'media_files_read_failed', { postId: post.id }, e); }
 
@@ -541,7 +553,7 @@ async function getMediaForPost(post: MediaPost, guild: Guild | null): Promise<{
   }
   if (items.length > 0) {
     const source = usedArchive && !usedDisk ? 'archive' : (usedDisk && !usedArchive ? 'legacy_disk_fallback' : 'archive+legacy_disk');
-    log('info', 'viewall_media_source_found', { postId: post.id, source, count: items.length });
+    log('info', 'viewall_media_source_found', { postId: post.id, source, count: items.length, files: files.length });
     return { items, files, source };
   }
   if (post.media_url && /^https?:\/\//.test(post.media_url)) {
@@ -715,13 +727,11 @@ async function handleSharePick(
     postId, sessionId, userId: interaction.user.id, count: interaction.values.length,
   });
 
-  // ✅ await مستعاد
   const post = await getMediaPostById(postId);
   if (!post) {
     await interaction.reply({ content: '❌ المنشور غير موجود.', flags: MessageFlags.Ephemeral });
     return;
   }
-  // ✅ await مستعاد
   const channelCfg = await getMediaChannel(post.display_channel_id);
   if (!channelCfg) {
     await interaction.reply({ content: '❌ القناة غير مهيأة.', flags: MessageFlags.Ephemeral });
@@ -842,13 +852,11 @@ async function handleShareConfirm(
     return;
   }
 
-  // ✅ await مستعاد
   const post = await getMediaPostById(postId);
   if (!post) {
     await interaction.reply({ content: '❌ المنشور غير موجود.', flags: MessageFlags.Ephemeral });
     return;
   }
-  // ✅ await مستعاد
   const channelCfg = await getMediaChannel(post.display_channel_id);
   if (!channelCfg) {
     await interaction.reply({ content: '❌ القناة غير مهيأة.', flags: MessageFlags.Ephemeral });
@@ -865,7 +873,6 @@ async function handleShareConfirm(
 
   const shareMedia: { name: string; buffer: Buffer; type: 'image' | 'video' }[] = [];
   try {
-    // ✅ await مستعاد
     const rows = await getMediaFiles(post.id);
     for (const row of rows) {
       if (row.storage_source === 'archive' && row.archive_channel_id && row.archive_message_id) {
@@ -1028,9 +1035,7 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
   const guildId = message.guild.id;
   const guildRef = message.guild;
 
-  // ✅ await مستعاد
   if (!await isMediaChannel(message.channelId)) return;
-  // ✅ await مستعاد
   const channelCfg = await getMediaChannel(message.channelId);
   if (!channelCfg) return;
   if (channelCfg.ignore_bots && message.author.bot) return;
@@ -1039,10 +1044,22 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
   if (!ch.isTextBased() || ch.isDMBased() || !('send' in ch)) return;
   const textChannel = ch as TextChannel;
 
-  // ✅ await مستعاد
   if (await getMediaPostBySource(message.id)) return;
 
   const attachments = [...message.attachments.values()];
+
+  // ✅ تشخيص مفصّل للمرفقات
+  if (attachments.length > 0) {
+    log('info', 'message_media_detect', {
+      messageId: message.id,
+      count: attachments.length,
+      details: attachments
+        .map((a) => `${a.name}|${a.contentType ?? 'null'}|${a.size}`)
+        .join(', ')
+        .slice(0, 800),
+    });
+  }
+
   const supported: { att: (typeof attachments)[0]; type: 'image' | 'video' }[] = [];
   for (const att of attachments) {
     const kind = isSupportedMedia({ contentType: att.contentType ?? null, url: att.url, size: att.size, name: att.name });
@@ -1052,7 +1069,15 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
   if (supported.length === 0) {
     if (message.author.bot) return;
     if (message.system) return;
-    if (attachments.length > 0) return;
+    if (attachments.length > 0) {
+      // ✅ رسالة تحتوي مرفقات غير مدعومة — لا تُصنّف كنص خالص، ولا تُحذف
+      log('info', 'unsupported_attachments_kept', {
+        messageId: message.id,
+        count: attachments.length,
+        names: attachments.map(a => a.name).join(',').slice(0, 200),
+      });
+      return;
+    }
     const hasMediaUrl = /https?:\/\/\S+\.(png|jpe?g|gif|webp|mp4|webm|mov|m4v)(\?\S*)?/i.test(message.content);
     if (hasMediaUrl) return;
 
@@ -1086,7 +1111,6 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
 
   let postId: number;
   try {
-    // ✅ await مستعاد
     postId = await reserveMediaPost({
       guild_id: guildId,
       source_channel_id: message.channelId,
@@ -1106,16 +1130,44 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
     return;
   }
 
+  // ✅ فلترة الحجم قبل التنزيل (مع تسجيل الأسباب)
+  const maxSlice = supported.slice(0, MAX_ATTACHMENTS);
+  const filtered: typeof maxSlice = [];
+  let oversizedCount = 0;
+  for (const item of maxSlice) {
+    if (item.att.size > MAX_FILE_BYTES) {
+      oversizedCount++;
+      log('warn', 'attachment_oversized', {
+        postId,
+        name: item.att.name,
+        type: item.type,
+        size: item.att.size,
+        limit: MAX_FILE_BYTES,
+      });
+      continue;
+    }
+    filtered.push(item);
+  }
+
   const downloadResults = await Promise.all(
-    supported.slice(0, MAX_ATTACHMENTS)
-      .filter((item) => item.att.size <= MAX_FILE_BYTES)
-      .map(async (item) => {
-        const buffer = await fetchAttachment(item.att.url);
-        if (!buffer || buffer.length === 0) return null;
-        const safeName = sanitizeFileName(item.att.name, item.type);
-        return { item, buffer, safeName };
-      }),
+    filtered.map(async (item) => {
+      const buffer = await fetchAttachment(item.att.url);
+      if (!buffer || buffer.length === 0) {
+        log('warn', 'attachment_download_failed', {
+          postId,
+          name: item.att.name,
+          contentType: item.att.contentType,
+          type: item.type,
+          size: item.att.size,
+        });
+        return null;
+      }
+      const safeName = sanitizeFileName(item.att.name, item.type);
+      return { item, buffer, safeName };
+    }),
   );
+
+  const downloadSuccessCount = downloadResults.filter((r) => r !== null).length;
 
   const files: AttachmentBuilder[] = [];
   const gallery: GalleryItem[] = [];
@@ -1128,7 +1180,6 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
     if (archiveChannel) {
       const archived = await uploadToArchive(archiveChannel, r.buffer, r.safeName);
       if (archived) {
-        // ✅ await مستعاد
         await insertMediaFile({
           postId, fileName: r.safeName, filePath: '', mediaType: r.item.type, size: r.buffer.length,
           storageSource: 'archive',
@@ -1143,7 +1194,6 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
     }
     const saved = saveMediaBuffer(postId, r.safeName, r.buffer);
     if (saved) {
-      // ✅ await مستعاد
       await insertMediaFile({
         postId, fileName: saved.fileName, filePath: saved.filePath,
         mediaType: r.item.type, size: saved.size, storageSource: 'disk',
@@ -1152,16 +1202,32 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
       files.push(new AttachmentBuilder(r.buffer, { name: r.safeName }));
       gallery.push({ url: `attachment://${r.safeName}`, description: r.item.type === 'video' ? 'Video' : 'Image' });
       diskUsed++;
+    } else {
+      log('error', 'disk_save_failed', { postId, fileName: r.safeName, size: r.buffer.length });
     }
   }
 
   if (gallery.length === 0) {
-    log('error', 'no_files_prepared', { postId, messageId: message.id });
-    // ✅ await مستعاد
+    log('error', 'no_files_prepared', {
+      postId,
+      messageId: message.id,
+      attachmentCount: attachments.length,
+      supportedTypes: supported.map(s => s.type).join(','),
+      supportedCount: supported.length,
+      filteredCount: filtered.length,
+      oversizedCount,
+      downloadSuccessCount,
+      archiveUsed,
+      diskUsed,
+    });
     try { await deleteMediaPost(postId); deleteMediaForPost(postId); } catch { /* ignore */ }
+    // ✅ رسالة المصدر لا تُحذف — نتركها سليمة للمستخدم
     return;
   }
-  log('info', 'media_persistence_success', { postId, count: gallery.length, archive: archiveUsed, disk: diskUsed });
+
+  log('info', 'media_persistence_success', {
+    postId, count: gallery.length, archive: archiveUsed, disk: diskUsed,
+  });
 
   const tempPost: MediaPost = {
     id: postId, guild_id: guildId,
@@ -1178,20 +1244,66 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
     userContent || null, mentionsLine, null,
   );
 
-  let displayMsg: Message;
+  let displayMsg: Message | null = null;
+  let usedCdnFallback = false;
+  let activeGallery: GalleryItem[] = gallery;
+
   try {
     const payload: any = { ...(buildV2Payload(initialContainer) as any), allowedMentions };
     if (files.length > 0) payload.files = files;
     displayMsg = await textChannel.send(payload);
     log('info', 'post_sent', { displayMsgId: displayMsg.id, postId, filesSent: files.length });
-  } catch (e) {
-    log('error', 'post_send_failed', { postId }, e);
-    // ✅ await مستعاد
-    try { await deleteMediaPost(postId); deleteMediaForPost(postId); } catch { /* ignore */ }
-    return;
+  } catch (sendErr: any) {
+    // ✅ سبب شائع: حجم الملف يتجاوز حد رفع السيرفر (tier boost)
+    log('warn', 'post_send_with_files_failed', {
+      postId,
+      filesSent: files.length,
+      error: sendErr?.message ?? 'unknown',
+    });
+
+    // Fallback: استخدام CDN URLs الأصلية من رسالة المصدر (لا رفع ملفات)
+    const cdnGallery: GalleryItem[] = [];
+    for (const r of downloadResults) {
+      if (!r) continue;
+      if (r.item.att.url && /^https?:\/\//.test(r.item.att.url)) {
+        cdnGallery.push({
+          url: r.item.att.url,
+          description: r.item.type === 'video' ? 'Video' : 'Image',
+        });
+      }
+    }
+
+    if (cdnGallery.length === 0) {
+      log('error', 'post_send_failed_no_fallback', { postId });
+      try { await deleteMediaPost(postId); deleteMediaForPost(postId); } catch { /* ignore */ }
+      return;
+    }
+
+    try {
+      const fallbackPost: MediaPost = { ...tempPost, media_url: cdnGallery[0]?.url ?? null };
+      const fallbackContainer = await buildPostContainer(
+        client, fallbackPost, channelCfg, guildRef,
+        authorMention, authorAvatarUrl, cdnGallery, 0,
+        userContent || null, mentionsLine, null,
+      );
+      displayMsg = await textChannel.send({
+        ...(buildV2Payload(fallbackContainer) as any),
+        allowedMentions,
+      });
+      usedCdnFallback = true;
+      activeGallery = cdnGallery;
+      log('info', 'post_sent_via_cdn', {
+        postId, cdnCount: cdnGallery.length,
+        note: 'CDN URLs تنتهي صلاحيتها تلقائيًا (~24 ساعة)، رسالة المصدر محفوظة',
+      });
+      await updateMediaPostMediaUrl(postId, cdnGallery[0]?.url ?? null);
+    } catch (e2) {
+      log('error', 'post_send_fallback_failed', { postId }, e2);
+      try { await deleteMediaPost(postId); deleteMediaForPost(postId); } catch { /* ignore */ }
+      return;
+    }
   }
 
-  // ✅ await مستعاد
   await updateMediaPostDisplay(postId, displayMsg.id);
 
   let threadId: string | null = null;
@@ -1204,7 +1316,6 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
       reason: 'Media Show discussion',
     });
     threadId = thread.id;
-    // ✅ await مستعاد
     await updateMediaPostThread(postId, threadId);
     log('info', 'post_thread_created', { postId, threadId });
   } catch (e) {
@@ -1216,10 +1327,10 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
       const updatedPost: MediaPost = { ...tempPost, display_message_id: displayMsg.id, thread_id: threadId };
       const updatedContainer = await buildPostContainer(
         client, updatedPost, channelCfg, guildRef,
-        authorMention, authorAvatarUrl, gallery, 0,
+        authorMention, authorAvatarUrl, activeGallery, 0,
         userContent || null, mentionsLine, threadId,
       );
-      const editFiles = diskFiles.map((d) => new AttachmentBuilder(d.buffer, { name: d.name }));
+      const editFiles = usedCdnFallback ? [] : diskFiles.map((d) => new AttachmentBuilder(d.buffer, { name: d.name }));
       const editPayload: any = { ...(buildV2Payload(updatedContainer) as any), allowedMentions };
       if (editFiles.length > 0) editPayload.files = editFiles;
       await displayMsg.edit(editPayload);
@@ -1232,24 +1343,29 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
   const separatorMsg = await sendLineSeparator(textChannel);
   if (separatorMsg) {
     try {
-      // ✅ await مستعاد
       await updateMediaPostSeparator(postId, separatorMsg.channelId, separatorMsg.id);
     } catch (e) {
       log('warn', 'separator_db_update_failed', { postId }, e);
     }
   }
 
-  try {
-    const me = guildRef.members.me;
-    const canDelete = me && textChannel.permissionsFor(me)?.has(PermissionFlagsBits.ManageMessages);
-    if (canDelete) await message.delete().catch(() => {});
-  } catch { /* ignore */ }
+  // ✅ حذف رسالة المصدر فقط عند النجاح الكامل بدون CDN fallback
+  // (في CDN fallback: نحتفظ بالمصدر لأن الرابط قد ينتهي)
+  if (!usedCdnFallback) {
+    try {
+      const me = guildRef.members.me;
+      const canDelete = me && textChannel.permissionsFor(me)?.has(PermissionFlagsBits.ManageMessages);
+      if (canDelete) await message.delete().catch(() => {});
+    } catch { /* ignore */ }
+  } else {
+    log('info', 'source_message_preserved', { postId, reason: 'cdn_fallback' });
+  }
 
-  // ✅ await مستعاد
   await logActivity('media_post', message.author.id, `${message.channelId}:${message.id}`);
   log('info', 'post_complete', {
     postId, totalMs: Date.now() - tStart, archiveUsed, diskUsed,
-    source: archiveUsed > 0 && diskUsed === 0 ? 'archive' : archiveUsed > 0 ? 'archive+disk' : 'disk',
+    cdnFallback: usedCdnFallback,
+    source: usedCdnFallback ? 'cdn_fallback' : (archiveUsed > 0 && diskUsed === 0 ? 'archive' : archiveUsed > 0 ? 'archive+disk' : 'disk'),
   });
 }
 
@@ -1259,7 +1375,6 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
 async function buildViewAllContainer(
   client: Client, post: MediaPost,
 ): Promise<{ container: ContainerBuilder; files: AttachmentBuilder[] }> {
-  // ✅ await مستعاد
   const channelCfg = await getMediaChannel(post.display_channel_id);
   const guild = client.guilds.cache.get(post.guild_id);
   const member = guild ? await guild.members.fetch(post.source_author_id).catch(() => null) : null;
@@ -1298,13 +1413,19 @@ async function buildViewAllContainer(
         gallery.addItems(new MediaGalleryItemBuilder().setURL(item.url).setDescription(item.description.slice(0, 1024)));
       }
       container.addMediaGalleryComponents(gallery);
+      // ✅ سجل منفصل: عدد عناصر الغاليري (CDN أو attachment) — الفرق عن files عدد طبيعي
+      log('info', 'viewall_gallery_built', {
+        postId: post.id,
+        galleryCount: galleryItems.length,
+        attachmentFiles: mediaFiles.length,
+      });
     } catch (e) { log('warn', 'viewall_media_failed', { postId: post.id }, e); }
   } else {
+    log('warn', 'viewall_no_gallery', { postId: post.id });
     container.addTextDisplayComponents(new TextDisplayBuilder().setContent('*⚠️ الميديا غير متاحة حاليًا*'));
   }
   container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
 
-  // ✅ await مستعاد
   const reactionCount = await getMediaReactionCount(post.id);
   const reactorsLine = channelCfg
     ? await buildReactorsLine(client, guild ?? null, post, channelCfg, reactionCount)
@@ -1312,7 +1433,6 @@ async function buildViewAllContainer(
   container.addTextDisplayComponents(new TextDisplayBuilder().setContent(reactorsLine));
   container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
 
-  // ✅ await مستعاد
   const allPosts = (await getUserMediaPosts(post.source_author_id, 500))
     .filter((p) => p.display_channel_id === post.display_channel_id)
     .sort((a, b) => b.created_at - a.created_at);
@@ -1376,17 +1496,15 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
     return;
   }
 
-  // ✅ await مستعاد
   const post = await getMediaPostById(postId);
   if (!post) {
-    await interaction.reply({ content: '❌ المنشور غير موجود.', flags: MessageFlags.Ephemeral });
+    await interaction.reply({ content: '❌ المنشور غير موجود.', flags: MessageFlags.Ephemeral }).catch(() => {});
     return;
   }
 
-  // ✅ await مستعاد
   const channelCfg = await getMediaChannel(post.display_channel_id);
   if (!channelCfg) {
-    await interaction.reply({ content: '❌ القناة غير مهيأة.', flags: MessageFlags.Ephemeral });
+    await interaction.reply({ content: '❌ القناة غير مهيأة.', flags: MessageFlags.Ephemeral }).catch(() => {});
     return;
   }
 
@@ -1411,7 +1529,6 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
     let count = 0;
     let has = false;
     try {
-      // ✅ await على كل استدعاء
       has = await hasMediaReaction(postId, interaction.user.id);
       if (has) await removeMediaReaction(postId, interaction.user.id);
       else await addMediaReaction(postId, interaction.user.id, channelCfg.reaction_emoji);
@@ -1447,40 +1564,93 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
     const isAdmin = interaction.memberPermissions?.has(PermissionFlagsBits.ManageMessages) ?? false;
     const adminAllowed = channelCfg.allow_admin_delete === 1;
     if (!isOwner && !(isAdmin && adminAllowed)) {
-      await interaction.reply({ content: '❌ هذا المنشور ليس لك.', flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: '❌ هذا المنشور ليس لك.', flags: MessageFlags.Ephemeral }).catch(() => {});
       return;
     }
+
+    // ✅ أقرّ بالتفاعل مبكرًا قبل عمليات الحذف الطويلة (تجاوز 3s → 10062 Unknown interaction)
+    try {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    } catch (e) {
+      log('warn', 'delete_defer_failed', { postId, error: (e as Error)?.message });
+      return;
+    }
+
+    let postDeleted = false;
+    let threadDeleted = false;
+    let separatorDeleted = false;
+    let dbCleaned = false;
+    const cleanupErrors: string[] = [];
+
     try {
       const displayCh = guild.channels.cache.get(post.display_channel_id) as TextChannel | undefined;
       if (displayCh) {
         const displayMsg = await displayCh.messages.fetch(post.display_message_id).catch(() => null);
-        if (displayMsg) await displayMsg.delete().catch(() => {});
+        if (displayMsg) {
+          await displayMsg.delete().catch(() => {});
+          postDeleted = true;
+        }
       }
-      if (post.thread_id) {
-        try {
-          const thread = await guild.channels.fetch(post.thread_id).catch(() => null);
-          if (thread && thread.isThread()) await thread.delete('Post deleted').catch(() => {});
-        } catch { /* ignore */ }
+    } catch (e) {
+      cleanupErrors.push('display');
+      log('warn', 'delete_display_failed', { postId }, e);
+    }
+
+    if (post.thread_id) {
+      try {
+        const thread = await guild.channels.fetch(post.thread_id).catch(() => null);
+        if (thread && thread.isThread()) {
+          await thread.delete('Post deleted').catch(() => {});
+          threadDeleted = true;
+          log('info', 'thread_deleted_cleaned', { threadId: post.thread_id, postId });
+        }
+      } catch (e) {
+        cleanupErrors.push('thread');
+        log('warn', 'delete_thread_failed', { postId }, e);
       }
-      if (post.separator_message_id && post.separator_channel_id) {
-        try {
-          const sepCh = guild.channels.cache.get(post.separator_channel_id) as TextChannel | undefined;
-          if (sepCh) {
-            const sepMsg = await sepCh.messages.fetch(post.separator_message_id).catch(() => null);
-            if (sepMsg) await sepMsg.delete().catch(() => {});
+    }
+
+    if (post.separator_message_id && post.separator_channel_id) {
+      try {
+        const sepCh = guild.channels.cache.get(post.separator_channel_id) as TextChannel | undefined;
+        if (sepCh) {
+          const sepMsg = await sepCh.messages.fetch(post.separator_message_id).catch(() => null);
+          if (sepMsg) {
+            await sepMsg.delete().catch(() => {});
+            separatorDeleted = true;
             log('info', 'separator_deleted', { postId, separatorMessageId: post.separator_message_id });
           }
-        } catch (e) { log('warn', 'separator_delete_failed', { postId }, e); }
+        }
+      } catch (e) {
+        cleanupErrors.push('separator');
+        log('warn', 'separator_delete_failed', { postId }, e);
       }
-      // ✅ await مستعاد
+    }
+
+    try {
       await deleteMediaFilesForPost(postId);
       deleteMediaForPost(postId);
       await deleteMediaPost(postId);
       await logActivity('media_delete', interaction.user.id, `${postId}`);
-      await interaction.reply({ content: '✅ تم حذف العرض.', flags: MessageFlags.Ephemeral });
+      dbCleaned = true;
     } catch (e) {
-      log('error', 'delete_failed', {}, e);
-      await interaction.reply({ content: '❌ فشل الحذف.', flags: MessageFlags.Ephemeral });
+      cleanupErrors.push('db');
+      log('warn', 'delete_db_failed', { postId }, e);
+    }
+
+    // ✅ فصل نتيجة الحذف عن نتيجة الرد
+    const parts2: string[] = [];
+    if (postDeleted) parts2.push('✅ تم حذف العرض');
+    if (threadDeleted) parts2.push('✅ Thread');
+    if (separatorDeleted) parts2.push('✅ الفاصل');
+    if (dbCleaned) parts2.push('✅ البيانات');
+    if (cleanupErrors.length > 0) parts2.push(`⚠️ فشل: ${cleanupErrors.join(', ')}`);
+
+    const summary = parts2.join(' · ') || '⚠️ لم يتم حذف أي مورد.';
+    try {
+      await interaction.editReply({ content: summary });
+    } catch (e) {
+      log('warn', 'delete_edit_reply_failed', { postId, error: (e as Error)?.message });
     }
     return;
   }
@@ -1492,7 +1662,7 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
       const replyPayload: any = { ...payload, allowedMentions: { parse: [] }, flags: payload.flags | MessageFlags.Ephemeral };
       if (files.length > 0) replyPayload.files = files;
       await interaction.reply(replyPayload);
-      log('info', 'viewall_opened', { postId, files: files.length });
+      log('info', 'viewall_opened', { postId, attachmentFiles: files.length });
     } catch (e: any) {
       log('error', 'viewall_failed', { postId }, e);
       await interaction.reply({ content: `❌ فشل عرض القائمة: ${e?.message ?? 'خطأ'}`, flags: MessageFlags.Ephemeral }).catch(() => {});
@@ -1503,7 +1673,6 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
   if (action === 'nav') {
     const dir = parts[2];
     if (dir === 'count') { await interaction.deferUpdate().catch(() => {}); return; }
-    // ✅ await مستعاد
     const sorted = (await getUserMediaPosts(post.source_author_id, 500))
       .filter((p) => p.display_channel_id === post.display_channel_id)
       .sort((a, b) => b.created_at - a.created_at);
@@ -1514,7 +1683,6 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
     if (dir === 'next') idx = Math.min(ids.length - 1, idx + 1);
     const newPostId = ids[idx];
     if (!newPostId || newPostId === postId) { await interaction.deferUpdate().catch(() => {}); return; }
-    // ✅ await مستعاد
     const newPost = await getMediaPostById(newPostId);
     if (!newPost) { await interaction.deferUpdate().catch(() => {}); return; }
     try {
@@ -1522,7 +1690,7 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
       const payload: any = { ...(buildV2Payload(container) as any), allowedMentions: { parse: [] } };
       if (files.length > 0) payload.files = files;
       await interaction.update(payload);
-      log('info', 'viewall_message_update_success', { to: newPostId, dir, files: files.length });
+      log('info', 'viewall_message_update_success', { to: newPostId, dir, attachmentFiles: files.length });
     } catch (e: any) {
       log('error', 'viewall_navigation_failed', { postId, dir, newPostId }, e);
       await interaction.deferUpdate().catch(() => {});
@@ -1624,13 +1792,13 @@ export function registerMediaShow(client: Client): void {
     try { await handleMediaButton(interaction); }
     catch (e) {
       log('error', 'media_button_unhandled', { customId: interaction.customId }, e);
+      // ✅ لا نحاول الرد مرة أخرى إذا كان الـ interaction قد تم التعامل معه (10062)
       if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
         await interaction.reply({ content: '❌ حدث خطأ.', flags: MessageFlags.Ephemeral }).catch(() => {});
       }
     }
   });
 
-  // ✅ ThreadDelete — إصلاح `db.prepare` → `db.execute` (async)
   client.on(Events.ThreadDelete, (thread) => {
     void (async () => {
       try {
@@ -1652,5 +1820,5 @@ export function registerMediaShow(client: Client): void {
   });
 
   startStorageCleanup();
-  log('info', 'registered', { cleanup: 'scheduled', archive: 'enabled', shareUi: 'componentsV2+userSelect', shareDm: 'reconstructedPostWithSharer', viewAllCustomizable: true, noteRemoved: true, resultNoteRemoved: true });
+  log('info', 'registered', { cleanup: 'scheduled', archive: 'enabled', shareUi: 'componentsV2+userSelect', shareDm: 'reconstructedPostWithSharer', viewAllCustomizable: true, noteRemoved: true, resultNoteRemoved: true, videoSupport: 'extended-mime+ext' });
 }
