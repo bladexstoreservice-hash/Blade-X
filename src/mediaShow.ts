@@ -43,17 +43,17 @@ function log(level: LogLevel, op: string, ctx: Record<string, unknown> = {}, err
 }
 
 const MAX_ATTACHMENTS = 10;
-// ✅ رُفع من 24MB إلى 100MB (Discord Tier 3 max). الخوادم ذات المستوى الأقل
-// سترفض الرفع تلقائيًا في مرحلة الإرسال، وتُبقي رسالة المصدر سليمة.
 const MAX_FILE_BYTES = 100 * 1024 * 1024;
 const MAX_USER_CONTENT = 1900;
 const THREAD_ARCHIVE_MINUTES = 60;
 const LINE_IMAGE_PATH = path.resolve(process.cwd(), 'assets', 'line.png');
 
+const REACTORS_PAGE_SIZE = 40;
+
 const DEFAULT_EMOJI = {
   author: '🎃', reaction: '🎃', comment: '💬', delete: '🗑️', viewall: '👥',
   share: '📤', confirm: '✅', cancel: '❌',
-  openPost: '🎃', prev: '◀️', next: '▶️',
+  openPost: '🎃', prev: '◀️', next: '▶️', back: '↩️',
 } as const;
 
 // ============================================================
@@ -291,10 +291,6 @@ function getArchiveChannel(guild: Guild, client: Client): TextChannel | null {
 // ============================================================
 // Media helpers
 // ============================================================
-// ✅ تحسين التصنيف: يعتمد على MIME أولاً، ثم الامتداد كبديل عند غياب
-// MIME أو كونه عامًّا (octet-stream). لا يُصنّف أي ملف غير صورة/فيديو
-// كوسائط، ولا يقبل صيغًا خطيرة (PDF/ZIP/نصوص) حتى لو كان امتدادها
-// يشبه اسم صورة أو فيديو.
 function isSupportedMedia(att: { contentType: string | null; url: string; size: number; name: string }): {
   type: 'image' | 'video' | null;
 } {
@@ -399,14 +395,18 @@ async function getAuthorPostCount(authorId: string, channelId: string): Promise<
 async function buildReactorsLine(
   client: Client | null, guild: Guild | null,
   post: MediaPost, channel: MediaChannel, count: number,
+  showAll: boolean = false
 ): Promise<string> {
   if (count === 0) return 'لا يوجد متفاعلون بعد';
-  const userIds = await getMediaReactionUsers(post.id, 10);
+  const limit = showAll ? 40 : 10;
+  const userIds = await getMediaReactionUsers(post.id, limit);
   if (userIds.length === 0) return 'لا يوجد متفاعلون بعد';
   const emoji = (await resolveEmojiTextAsync(client, guild, channel.reaction_emoji, 'reaction_emoji')) || DEFAULT_EMOJI.reaction;
   const label = channel.footer_from_label || 'Pumpkins from';
-  const shown = userIds.slice(0, 3).map((id) => `<@${id}>`).join(', ');
-  const extra = Math.max(0, count - 3);
+  
+  const displayedCount = showAll ? Math.min(userIds.length, 40) : 3;
+  const shown = userIds.slice(0, displayedCount).map((id) => `<@${id}>`).join(', ');
+  const extra = Math.max(0, count - displayedCount);
   const othersLabel = channel.footer_others_label || 'and {n} others';
   const extraText = extra > 0 ? ` ${othersLabel.replace('{n}', String(extra))}` : '';
   return `${emoji} **${label}** ${shown}${extraText}`;
@@ -438,12 +438,17 @@ async function buildMainActionRow(
     .setStyle(ButtonStyle.Secondary);
   await applyButtonEmoji(shareBtn, client, guild, channel.share_emoji, DEFAULT_EMOJI.share, 'share_emoji');
 
+  const galleryBtn = new ButtonBuilder()
+    .setCustomId(`media:gallery:${post.id}`)
+    .setStyle(ButtonStyle.Secondary);
+  try { galleryBtn.setEmoji('🖼️'); } catch {}
+
   const deleteBtn = new ButtonBuilder()
     .setCustomId(`media:delete:${post.id}`)
     .setStyle(ButtonStyle.Danger);
   await applyButtonEmoji(deleteBtn, client, guild, channel.delete_emoji, DEFAULT_EMOJI.delete, 'delete_emoji');
 
-  return new ActionRowBuilder<ButtonBuilder>().addComponents(reactBtn, commentBtn, shareBtn, deleteBtn);
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(reactBtn, commentBtn, shareBtn, galleryBtn, deleteBtn);
 }
 
 async function buildPostContainer(
@@ -451,6 +456,7 @@ async function buildPostContainer(
   guild: Guild | null, authorMention: string, authorAvatarUrl: string,
   galleryItems: GalleryItem[], reactionCount: number,
   userContent: string | null, mentionsLine: string | null, threadId: string | null,
+  showAllReactors: boolean = false
 ): Promise<ContainerBuilder> {
   const container = new ContainerBuilder();
   let accent = 0xf59e0b;
@@ -492,14 +498,14 @@ async function buildPostContainer(
 
   container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
 
-  const reactorsLine = await buildReactorsLine(client, guild, post, channel, reactionCount);
+  const reactorsLine = await buildReactorsLine(client, guild, post, channel, reactionCount, showAllReactors);
   const postCount = post.source_author_id ? await getAuthorPostCount(post.source_author_id, post.display_channel_id) : 0;
   const timeAgo = `<t:${Math.floor(post.created_at / 1000)}:R>`;
   const footerText = `${reactorsLine}\n-# ${postCount} posts · ${timeAgo}`;
 
   const viewAllBtn = new ButtonBuilder()
-    .setCustomId(`media:viewall:${post.id}`)
-    .setLabel(channel.button_view_all_label || 'View All')
+    .setCustomId(`media:viewall:${post.id}:${showAllReactors ? 'false' : 'true'}`)
+    .setLabel(showAllReactors ? 'Show Less' : (channel.button_view_all_label || 'View All'))
     .setStyle(ButtonStyle.Secondary);
   await applyButtonEmoji(viewAllBtn, client, guild, channel.viewall_emoji, DEFAULT_EMOJI.viewall, 'viewall_emoji');
 
@@ -600,6 +606,123 @@ async function sendLineSeparator(textChannel: TextChannel): Promise<Message | nu
     log('error', 'line_separator_failed', {}, e);
     return null;
   }
+}
+
+// ============================================================
+// Reactors View (Paginated) - For > 40
+// ============================================================
+async function buildReactorsViewContainer(
+  client: Client,
+  post: MediaPost,
+  page: number,
+): Promise<ContainerBuilder> {
+  const channelCfg = await getMediaChannel(post.display_channel_id);
+  const guild = client.guilds.cache.get(post.guild_id);
+
+  const rawEmoji = channelCfg
+    ? await resolveEmojiTextAsync(client, guild ?? null, channelCfg.reaction_emoji, 'reaction_emoji')
+    : '';
+  const reactionEmoji = rawEmoji || DEFAULT_EMOJI.reaction;
+  const footerFromLabel = channelCfg?.footer_from_label || 'Liked by';
+
+  let accent = 0xf59e0b;
+  if (channelCfg) {
+    try {
+      const n = parseInt((channelCfg.color || '#f59e0b').replace('#', ''), 16);
+      if (Number.isFinite(n)) accent = n;
+    } catch { /* default */ }
+  }
+
+  const container = new ContainerBuilder();
+  container.setAccentColor(accent);
+
+  container.addTextDisplayComponents(
+    new TextDisplayBuilder().setContent(`# ${reactionEmoji} Reactors`),
+  );
+  container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
+
+  const countHint = await getMediaReactionCount(post.id);
+  const allUsers = countHint > 0
+    ? await getMediaReactionUsers(post.id, Math.max(countHint + 10, 100))
+    : [];
+  const uniqueUsers = [...new Set(allUsers)];
+  const total = uniqueUsers.length;
+
+  if (total === 0) {
+    container.addTextDisplayComponents(
+      new TextDisplayBuilder().setContent('*لا يوجد متفاعلون بعد*'),
+    );
+    container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
+
+    const backBtn = new ButtonBuilder()
+      .setCustomId(`media:reactorsback:${post.id}`)
+      .setLabel('رجوع / Back')
+      .setStyle(ButtonStyle.Secondary);
+    try { backBtn.setEmoji(DEFAULT_EMOJI.back); } catch { /* ignore */ }
+
+    container.addActionRowComponents(new ActionRowBuilder<ButtonBuilder>().addComponents(backBtn));
+    container.addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(`-# ${config.botName} · Media Show · Reactors`),
+    );
+    return container;
+  }
+
+  const totalPages = Math.max(1, Math.ceil(total / REACTORS_PAGE_SIZE));
+  const currentPage = Math.max(0, Math.min(page, totalPages - 1));
+  const offset = currentPage * REACTORS_PAGE_SIZE;
+  const pageUsers = uniqueUsers.slice(offset, offset + REACTORS_PAGE_SIZE);
+
+  const mentions = pageUsers.map((id) => `<@${id}>`).join(', ');
+  const rangeStart = offset + 1;
+  const rangeEnd = Math.min(offset + pageUsers.length, total);
+
+  const headerLine = totalPages > 1
+    ? `**${reactionEmoji} ${footerFromLabel}** — ${rangeStart}–${rangeEnd} / ${total} (${currentPage + 1}/${totalPages})`
+    : `**${reactionEmoji} ${footerFromLabel}** — ${total}`;
+
+  container.addTextDisplayComponents(
+    new TextDisplayBuilder().setContent(`${headerLine}\n${mentions}`),
+  );
+  container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
+
+  const navRow = new ActionRowBuilder<ButtonBuilder>();
+
+  if (totalPages > 1) {
+    const prevPageBtn = new ButtonBuilder()
+      .setCustomId(`media:reactors:${post.id}:${currentPage - 1}`)
+      .setLabel('◀️')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(currentPage <= 0);
+
+    const counterBtn = new ButtonBuilder()
+      .setCustomId(`media:reactorscount:${post.id}`)
+      .setLabel(`${currentPage + 1} / ${totalPages}`)
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(true);
+
+    const nextPageBtn = new ButtonBuilder()
+      .setCustomId(`media:reactors:${post.id}:${currentPage + 1}`)
+      .setLabel('▶️')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(currentPage >= totalPages - 1);
+
+    navRow.addComponents(prevPageBtn, counterBtn, nextPageBtn);
+  }
+
+  const backBtn = new ButtonBuilder()
+    .setCustomId(`media:reactorsback:${post.id}`)
+    .setLabel('رجوع / Back')
+    .setStyle(ButtonStyle.Secondary);
+  try { backBtn.setEmoji(DEFAULT_EMOJI.back); } catch { /* ignore */ }
+
+  navRow.addComponents(backBtn);
+  container.addActionRowComponents(navRow);
+
+  container.addTextDisplayComponents(
+    new TextDisplayBuilder().setContent(`-# ${config.botName} · Media Show · Reactors`),
+  );
+
+  return container;
 }
 
 // ============================================================
@@ -1048,7 +1171,6 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
 
   const attachments = [...message.attachments.values()];
 
-  // ✅ تشخيص مفصّل للمرفقات
   if (attachments.length > 0) {
     log('info', 'message_media_detect', {
       messageId: message.id,
@@ -1070,7 +1192,6 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
     if (message.author.bot) return;
     if (message.system) return;
     if (attachments.length > 0) {
-      // ✅ رسالة تحتوي مرفقات غير مدعومة — لا تُصنّف كنص خالص، ولا تُحذف
       log('info', 'unsupported_attachments_kept', {
         messageId: message.id,
         count: attachments.length,
@@ -1130,7 +1251,6 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
     return;
   }
 
-  // ✅ فلترة الحجم قبل التنزيل (مع تسجيل الأسباب)
   const maxSlice = supported.slice(0, MAX_ATTACHMENTS);
   const filtered: typeof maxSlice = [];
   let oversizedCount = 0;
@@ -1221,7 +1341,6 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
       diskUsed,
     });
     try { await deleteMediaPost(postId); deleteMediaForPost(postId); } catch { /* ignore */ }
-    // ✅ رسالة المصدر لا تُحذف — نتركها سليمة للمستخدم
     return;
   }
 
@@ -1241,7 +1360,7 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
   const initialContainer = await buildPostContainer(
     client, tempPost, channelCfg, guildRef,
     authorMention, authorAvatarUrl, gallery, 0,
-    userContent || null, mentionsLine, null,
+    userContent || null, mentionsLine, null, false
   );
 
   let displayMsg: Message | null = null;
@@ -1254,14 +1373,12 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
     displayMsg = await textChannel.send(payload);
     log('info', 'post_sent', { displayMsgId: displayMsg.id, postId, filesSent: files.length });
   } catch (sendErr: any) {
-    // ✅ سبب شائع: حجم الملف يتجاوز حد رفع السيرفر (tier boost)
     log('warn', 'post_send_with_files_failed', {
       postId,
       filesSent: files.length,
       error: sendErr?.message ?? 'unknown',
     });
 
-    // Fallback: استخدام CDN URLs الأصلية من رسالة المصدر (لا رفع ملفات)
     const cdnGallery: GalleryItem[] = [];
     for (const r of downloadResults) {
       if (!r) continue;
@@ -1284,7 +1401,7 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
       const fallbackContainer = await buildPostContainer(
         client, fallbackPost, channelCfg, guildRef,
         authorMention, authorAvatarUrl, cdnGallery, 0,
-        userContent || null, mentionsLine, null,
+        userContent || null, mentionsLine, null, false
       );
       displayMsg = await textChannel.send({
         ...(buildV2Payload(fallbackContainer) as any),
@@ -1328,7 +1445,7 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
       const updatedContainer = await buildPostContainer(
         client, updatedPost, channelCfg, guildRef,
         authorMention, authorAvatarUrl, activeGallery, 0,
-        userContent || null, mentionsLine, threadId,
+        userContent || null, mentionsLine, threadId, false
       );
       const editFiles = usedCdnFallback ? [] : diskFiles.map((d) => new AttachmentBuilder(d.buffer, { name: d.name }));
       const editPayload: any = { ...(buildV2Payload(updatedContainer) as any), allowedMentions };
@@ -1349,8 +1466,6 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
     }
   }
 
-  // ✅ حذف رسالة المصدر فقط عند النجاح الكامل بدون CDN fallback
-  // (في CDN fallback: نحتفظ بالمصدر لأن الرابط قد ينتهي)
   if (!usedCdnFallback) {
     try {
       const me = guildRef.members.me;
@@ -1370,7 +1485,7 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
 }
 
 // ============================================================
-// View All
+// View All / Media Gallery
 // ============================================================
 async function buildViewAllContainer(
   client: Client, post: MediaPost,
@@ -1413,22 +1528,15 @@ async function buildViewAllContainer(
         gallery.addItems(new MediaGalleryItemBuilder().setURL(item.url).setDescription(item.description.slice(0, 1024)));
       }
       container.addMediaGalleryComponents(gallery);
-      // ✅ سجل منفصل: عدد عناصر الغاليري (CDN أو attachment) — الفرق عن files عدد طبيعي
-      log('info', 'viewall_gallery_built', {
-        postId: post.id,
-        galleryCount: galleryItems.length,
-        attachmentFiles: mediaFiles.length,
-      });
     } catch (e) { log('warn', 'viewall_media_failed', { postId: post.id }, e); }
   } else {
-    log('warn', 'viewall_no_gallery', { postId: post.id });
     container.addTextDisplayComponents(new TextDisplayBuilder().setContent('*⚠️ الميديا غير متاحة حاليًا*'));
   }
   container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
 
   const reactionCount = await getMediaReactionCount(post.id);
   const reactorsLine = channelCfg
-    ? await buildReactorsLine(client, guild ?? null, post, channelCfg, reactionCount)
+    ? await buildReactorsLine(client, guild ?? null, post, channelCfg, reactionCount, false)
     : `⭐ **${reactionCount}** reactions`;
   container.addTextDisplayComponents(new TextDisplayBuilder().setContent(reactorsLine));
   container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
@@ -1467,7 +1575,23 @@ async function buildViewAllContainer(
     .setStyle(ButtonStyle.Secondary)
     .setDisabled(true);
 
-  container.addActionRowComponents(new ActionRowBuilder<ButtonBuilder>().addComponents(prevBtn, openBtn, counterBtn, nextBtn));
+  const viewReactorsBtn = new ButtonBuilder()
+    .setCustomId(`media:reactors:${post.id}:0`)
+    .setLabel(reactionCount > 0 ? `View ${reactionCount} Reactors` : 'No Reactors')
+    .setStyle(ButtonStyle.Secondary)
+    .setDisabled(reactionCount === 0);
+  await applyButtonEmoji(
+    viewReactorsBtn, client, guild ?? null,
+    channelCfg?.reaction_emoji, DEFAULT_EMOJI.reaction, 'reaction_emoji',
+  );
+
+  container.addActionRowComponents(
+    new ActionRowBuilder<ButtonBuilder>().addComponents(prevBtn, openBtn, counterBtn, nextBtn),
+  );
+  container.addActionRowComponents(
+    new ActionRowBuilder<ButtonBuilder>().addComponents(viewReactorsBtn),
+  );
+
   container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# ${config.botName} · Media Show · <@${post.source_author_id}>`));
   return { container, files: mediaFiles };
 }
@@ -1482,9 +1606,14 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
 
   let postId: number;
   let sessionId: string | null = null;
+  let reactorPage = 0;
+
   if (action === 'share' || action === 'sharepick' || action === 'sharego' || action === 'shareno') {
     postId = Number(parts[2]);
     if (parts[3]) sessionId = parts[3];
+  } else if (action === 'reactors') {
+    postId = Number(parts[2]);
+    reactorPage = Number(parts[3]) || 0;
   } else {
     postId = Number(parts[parts.length - 1]);
   }
@@ -1524,6 +1653,46 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
     return;
   }
 
+  if (action === 'reactors') {
+    try {
+      const container = await buildReactorsViewContainer(interaction.client, post, reactorPage);
+      const payload: any = { ...(buildV2Payload(container) as any), allowedMentions: { parse: [] } };
+
+      const isEphemeral = Boolean((interaction.message as any)?.flags?.has?.(MessageFlags.Ephemeral));
+      if (isEphemeral) {
+        payload.attachments = [];
+        await interaction.update(payload);
+      } else {
+        await interaction.reply({ ...payload, flags: payload.flags | MessageFlags.Ephemeral });
+      }
+      log('info', 'reactors_opened', { postId, page: reactorPage, mode: isEphemeral ? 'update' : 'reply' });
+    } catch (e: any) {
+      log('error', 'reactors_view_failed', { postId, page: reactorPage }, e);
+      if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
+        await interaction.reply({ content: `❌ فشل عرض المتفاعلين: ${e?.message ?? 'خطأ'}`, flags: MessageFlags.Ephemeral }).catch(() => {});
+      }
+    }
+    return;
+  }
+
+  if (action === 'reactorsback') {
+    try {
+      const { container, files } = await buildViewAllContainer(interaction.client, post);
+      const payload: any = { ...(buildV2Payload(container) as any), allowedMentions: { parse: [] } };
+      if (files.length > 0) payload.files = files;
+      else payload.attachments = [];
+
+      await interaction.update(payload);
+      log('info', 'reactors_back_to_viewall', { postId, files: files.length });
+    } catch (e: any) {
+      log('error', 'reactorsback_failed', { postId }, e);
+      if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
+        await interaction.reply({ content: '❌ حدث خطأ.', flags: MessageFlags.Ephemeral }).catch(() => {});
+      }
+    }
+    return;
+  }
+
   if (action === 'react') {
     await interaction.deferUpdate().catch(() => {});
     let count = 0;
@@ -1547,7 +1716,7 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
       const updatedPost: MediaPost = { ...post, display_message_id: displayMsg.id };
       const container = await buildPostContainer(
         interaction.client, updatedPost, channelCfg, guild, authorMention, authorAvatarUrl,
-        gallery, count, post.content_snapshot ?? null, null, post.thread_id,
+        gallery, count, post.content_snapshot ?? null, null, post.thread_id, false
       );
       const payload: any = { ...buildV2Payload(container), allowedMentions: { parse: [] } };
       if (files.length > 0) payload.files = files;
@@ -1568,7 +1737,6 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
       return;
     }
 
-    // ✅ أقرّ بالتفاعل مبكرًا قبل عمليات الحذف الطويلة (تجاوز 3s → 10062 Unknown interaction)
     try {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     } catch (e) {
@@ -1638,7 +1806,6 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
       log('warn', 'delete_db_failed', { postId }, e);
     }
 
-    // ✅ فصل نتيجة الحذف عن نتيجة الرد
     const parts2: string[] = [];
     if (postDeleted) parts2.push('✅ تم حذف العرض');
     if (threadDeleted) parts2.push('✅ Thread');
@@ -1656,16 +1823,59 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
   }
 
   if (action === 'viewall') {
+    const showAll = parts[parts.length - 1] === 'true';
+    const count = await getMediaReactionCount(postId);
+
+    if (count > 40) {
+      try {
+        const container = await buildReactorsViewContainer(interaction.client, post, 0);
+        const payload: any = { ...(buildV2Payload(container) as any), allowedMentions: { parse: [] } };
+        await interaction.reply({ ...payload, flags: payload.flags | MessageFlags.Ephemeral });
+      } catch (e) {
+        log('error', 'viewall_reactors_failed', { postId }, e);
+      }
+      return;
+    }
+
+    try {
+      const displayCh = guild.channels.cache.get(post.display_channel_id) as TextChannel | undefined;
+      if (!displayCh) return;
+      const displayMsg = await displayCh.messages.fetch(post.display_message_id).catch(() => null);
+      if (!displayMsg) return;
+
+      const { items: gallery, files } = await getMediaForPost(post, guild);
+      const member = await guild.members.fetch(post.source_author_id).catch(() => null);
+      const authorMention = `<@${post.source_author_id}>`;
+      const authorAvatarUrl = member?.displayAvatarURL({ size: 256, extension: 'png', forceStatic: true }) ?? '';
+      const updatedPost: MediaPost = { ...post, display_message_id: displayMsg.id };
+      
+      const container = await buildPostContainer(
+        interaction.client, updatedPost, channelCfg, guild, authorMention, authorAvatarUrl,
+        gallery, count, post.content_snapshot ?? null, null, post.thread_id, showAll
+      );
+      
+      const payload: any = { ...buildV2Payload(container), allowedMentions: { parse: [] } };
+      if (files.length > 0) payload.files = files;
+      
+      await interaction.update(payload);
+      log('info', 'viewall_toggled', { postId, showAll });
+    } catch (e) {
+      log('error', 'viewall_toggle_failed', { postId }, e);
+    }
+    return;
+  }
+
+  if (action === 'gallery') {
     try {
       const { container, files } = await buildViewAllContainer(interaction.client, post);
       const payload = buildV2Payload(container);
       const replyPayload: any = { ...payload, allowedMentions: { parse: [] }, flags: payload.flags | MessageFlags.Ephemeral };
       if (files.length > 0) replyPayload.files = files;
       await interaction.reply(replyPayload);
-      log('info', 'viewall_opened', { postId, attachmentFiles: files.length });
+      log('info', 'gallery_opened', { postId, attachmentFiles: files.length });
     } catch (e: any) {
-      log('error', 'viewall_failed', { postId }, e);
-      await interaction.reply({ content: `❌ فشل عرض القائمة: ${e?.message ?? 'خطأ'}`, flags: MessageFlags.Ephemeral }).catch(() => {});
+      log('error', 'gallery_failed', { postId }, e);
+      await interaction.reply({ content: `❌ فشل عرض المعرض: ${e?.message ?? 'خطأ'}`, flags: MessageFlags.Ephemeral }).catch(() => {});
     }
     return;
   }
@@ -1689,6 +1899,7 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
       const { container, files } = await buildViewAllContainer(interaction.client, newPost);
       const payload: any = { ...(buildV2Payload(container) as any), allowedMentions: { parse: [] } };
       if (files.length > 0) payload.files = files;
+      else payload.attachments = [];
       await interaction.update(payload);
       log('info', 'viewall_message_update_success', { to: newPostId, dir, attachmentFiles: files.length });
     } catch (e: any) {
@@ -1792,7 +2003,6 @@ export function registerMediaShow(client: Client): void {
     try { await handleMediaButton(interaction); }
     catch (e) {
       log('error', 'media_button_unhandled', { customId: interaction.customId }, e);
-      // ✅ لا نحاول الرد مرة أخرى إذا كان الـ interaction قد تم التعامل معه (10062)
       if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
         await interaction.reply({ content: '❌ حدث خطأ.', flags: MessageFlags.Ephemeral }).catch(() => {});
       }
@@ -1820,5 +2030,5 @@ export function registerMediaShow(client: Client): void {
   });
 
   startStorageCleanup();
-  log('info', 'registered', { cleanup: 'scheduled', archive: 'enabled', shareUi: 'componentsV2+userSelect', shareDm: 'reconstructedPostWithSharer', viewAllCustomizable: true, noteRemoved: true, resultNoteRemoved: true, videoSupport: 'extended-mime+ext' });
+  log('info', 'registered', { cleanup: 'scheduled', archive: 'enabled', shareUi: 'componentsV2+userSelect', shareDm: 'reconstructedPostWithSharer', viewAllCustomizable: true, noteRemoved: true, resultNoteRemoved: true, videoSupport: 'extended-mime+ext', reactorsView: 'inline-toggle+paginated-pageSize40' });
 }
