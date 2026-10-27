@@ -399,17 +399,26 @@ async function getAuthorPostCount(authorId: string, channelId: string): Promise<
 async function buildReactorsLine(
   client: Client | null, guild: Guild | null,
   post: MediaPost, channel: MediaChannel, count: number,
+  showAll: boolean = false
 ): Promise<string> {
   if (count === 0) return 'لا يوجد متفاعلون بعد';
-  const userIds = await getMediaReactionUsers(post.id, 10);
+  // إذا كان showAll، نحضر ما يصل إلى 100 متفاعل لتجنب تجاوز حد النص
+  const limit = showAll ? Math.min(count, 100) : 10;
+  const userIds = await getMediaReactionUsers(post.id, limit);
   if (userIds.length === 0) return 'لا يوجد متفاعلون بعد';
   const emoji = (await resolveEmojiTextAsync(client, guild, channel.reaction_emoji, 'reaction_emoji')) || DEFAULT_EMOJI.reaction;
   const label = channel.footer_from_label || 'Pumpkins from';
-  const shown = userIds.slice(0, 3).map((id) => `<@${id}>`).join(', ');
-  const extra = Math.max(0, count - 3);
-  const othersLabel = channel.footer_others_label || 'and {n} others';
-  const extraText = extra > 0 ? ` ${othersLabel.replace('{n}', String(extra))}` : '';
-  return `${emoji} **${label}** ${shown}${extraText}`;
+  
+  if (showAll) {
+    const shown = userIds.map((id) => `<@${id}>`).join(', ');
+    return `${emoji} **${label}** ${shown}`;
+  } else {
+    const shown = userIds.slice(0, 3).map((id) => `<@${id}>`).join(', ');
+    const extra = Math.max(0, count - 3);
+    const othersLabel = channel.footer_others_label || 'and {n} others';
+    const extraText = extra > 0 ? ` ${othersLabel.replace('{n}', String(extra))}` : '';
+    return `${emoji} **${label}** ${shown}${extraText}`;
+  }
 }
 
 interface GalleryItem { url: string; description: string; }
@@ -492,7 +501,7 @@ async function buildPostContainer(
 
   container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
 
-  const reactorsLine = await buildReactorsLine(client, guild, post, channel, reactionCount);
+  const reactorsLine = await buildReactorsLine(client, guild, post, channel, reactionCount, false);
   const postCount = post.source_author_id ? await getAuthorPostCount(post.source_author_id, post.display_channel_id) : 0;
   const timeAgo = `<t:${Math.floor(post.created_at / 1000)}:R>`;
   const footerText = `${reactorsLine}\n-# ${postCount} posts · ${timeAgo}`;
@@ -1428,7 +1437,7 @@ async function buildViewAllContainer(
 
   const reactionCount = await getMediaReactionCount(post.id);
   const reactorsLine = channelCfg
-    ? await buildReactorsLine(client, guild ?? null, post, channelCfg, reactionCount)
+    ? await buildReactorsLine(client, guild ?? null, post, channelCfg, reactionCount, true)
     : `⭐ **${reactionCount}** reactions`;
   container.addTextDisplayComponents(new TextDisplayBuilder().setContent(reactorsLine));
   container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
