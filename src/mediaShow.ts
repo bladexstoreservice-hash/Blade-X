@@ -43,20 +43,17 @@ function log(level: LogLevel, op: string, ctx: Record<string, unknown> = {}, err
 }
 
 const MAX_ATTACHMENTS = 10;
-// ✅ 100MB = حد Discord Tier 3. السيرفرات الأدنى سترفض الرفع → CDN fallback
+// ✅ رُفع من 24MB إلى 100MB (Discord Tier 3 max). الخوادم ذات المستوى الأقل
+// سترفض الرفع تلقائيًا في مرحلة الإرسال، وتُبقي رسالة المصدر سليمة.
 const MAX_FILE_BYTES = 100 * 1024 * 1024;
 const MAX_USER_CONTENT = 1900;
 const THREAD_ARCHIVE_MINUTES = 60;
 const LINE_IMAGE_PATH = path.resolve(process.cwd(), 'assets', 'line.png');
 
-// ✅ ثابت جديد: عدد المتفاعلين لكل صفحة في لوحة Reactors
-// 40 × 22 حرف (<@ID>) + ", " ≈ 960 حرف — أقل بكثير من حد 4000
-const REACTORS_PAGE_SIZE = 40;
-
 const DEFAULT_EMOJI = {
   author: '🎃', reaction: '🎃', comment: '💬', delete: '🗑️', viewall: '👥',
   share: '📤', confirm: '✅', cancel: '❌',
-  openPost: '🎃', prev: '◀️', next: '▶️', back: '↩️',
+  openPost: '🎃', prev: '◀️', next: '▶️',
 } as const;
 
 // ============================================================
@@ -294,6 +291,10 @@ function getArchiveChannel(guild: Guild, client: Client): TextChannel | null {
 // ============================================================
 // Media helpers
 // ============================================================
+// ✅ تحسين التصنيف: يعتمد على MIME أولاً، ثم الامتداد كبديل عند غياب
+// MIME أو كونه عامًّا (octet-stream). لا يُصنّف أي ملف غير صورة/فيديو
+// كوسائط، ولا يقبل صيغًا خطيرة (PDF/ZIP/نصوص) حتى لو كان امتدادها
+// يشبه اسم صورة أو فيديو.
 function isSupportedMedia(att: { contentType: string | null; url: string; size: number; name: string }): {
   type: 'image' | 'video' | null;
 } {
@@ -599,136 +600,6 @@ async function sendLineSeparator(textChannel: TextChannel): Promise<Message | nu
     log('error', 'line_separator_failed', {}, e);
     return null;
   }
-}
-
-// ============================================================
-// ✅ جديد: لوحة عرض جميع المتفاعلين (Reactors View)
-// تعرض الأسماء الحقيقية <@USER_ID> بنفس أسلوب "Liked by" في المنشور
-// مع ترقيم تلقائي إذا تجاوزت العدد REACTORS_PAGE_SIZE
-// ============================================================
-async function buildReactorsViewContainer(
-  client: Client,
-  post: MediaPost,
-  page: number,
-): Promise<ContainerBuilder> {
-  const channelCfg = await getMediaChannel(post.display_channel_id);
-  const guild = client.guilds.cache.get(post.guild_id);
-
-  const rawEmoji = channelCfg
-    ? await resolveEmojiTextAsync(client, guild ?? null, channelCfg.reaction_emoji, 'reaction_emoji')
-    : '';
-  const reactionEmoji = rawEmoji || DEFAULT_EMOJI.reaction;
-  const footerFromLabel = channelCfg?.footer_from_label || 'Liked by';
-
-  let accent = 0xf59e0b;
-  if (channelCfg) {
-    try {
-      const n = parseInt((channelCfg.color || '#f59e0b').replace('#', ''), 16);
-      if (Number.isFinite(n)) accent = n;
-    } catch { /* default */ }
-  }
-
-  const container = new ContainerBuilder();
-  container.setAccentColor(accent);
-
-  container.addTextDisplayComponents(
-    new TextDisplayBuilder().setContent(`# ${reactionEmoji} Reactors`),
-  );
-  container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
-
-  // جلب العدد أولًا لتحديد حجم الطلب (تعامل آمن مع التغيرات الطفيفة)
-  const countHint = await getMediaReactionCount(post.id);
-  const allUsers = countHint > 0
-    ? await getMediaReactionUsers(post.id, Math.max(countHint + 10, 100))
-    : [];
-  const uniqueUsers = [...new Set(allUsers)]; // إزالة أي تكرار احتياطيًا
-  const total = uniqueUsers.length;
-
-  // حالة فارغة
-  if (total === 0) {
-    container.addTextDisplayComponents(
-      new TextDisplayBuilder().setContent('*لا يوجد متفاعلون بعد*'),
-    );
-    container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
-
-    const backBtn = new ButtonBuilder()
-      .setCustomId(`media:reactorsback:${post.id}`)
-      .setLabel('رجوع / Back')
-      .setStyle(ButtonStyle.Secondary);
-    try { backBtn.setEmoji(DEFAULT_EMOJI.back); } catch { /* ignore */ }
-
-    container.addActionRowComponents(new ActionRowBuilder<ButtonBuilder>().addComponents(backBtn));
-    container.addTextDisplayComponents(
-      new TextDisplayBuilder().setContent(`-# ${config.botName} · Media Show · Reactors`),
-    );
-    return container;
-  }
-
-  const totalPages = Math.max(1, Math.ceil(total / REACTORS_PAGE_SIZE));
-  const currentPage = Math.max(0, Math.min(page, totalPages - 1));
-  const offset = currentPage * REACTORS_PAGE_SIZE;
-  const pageUsers = uniqueUsers.slice(offset, offset + REACTORS_PAGE_SIZE);
-
-  const mentions = pageUsers.map((id) => `<@${id}>`).join(', ');
-  const rangeStart = offset + 1;
-  const rangeEnd = Math.min(offset + pageUsers.length, total);
-
-  const headerLine = totalPages > 1
-    ? `**${reactionEmoji} ${footerFromLabel}** — ${rangeStart}–${rangeEnd} / ${total} (${currentPage + 1}/${totalPages})`
-    : `**${reactionEmoji} ${footerFromLabel}** — ${total}`;
-
-  container.addTextDisplayComponents(
-    new TextDisplayBuilder().setContent(`${headerLine}\n${mentions}`),
-  );
-  container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
-
-  // صف التنقل
-  const navRow = new ActionRowBuilder<ButtonBuilder>();
-
-  if (totalPages > 1) {
-    const prevPageBtn = new ButtonBuilder()
-      .setCustomId(`media:reactors:${post.id}:${currentPage - 1}`)
-      .setLabel('◀️')
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(currentPage <= 0);
-
-    const counterBtn = new ButtonBuilder()
-      .setCustomId(`media:reactorscount:${post.id}`)
-      .setLabel(`${currentPage + 1} / ${totalPages}`)
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(true);
-
-    const nextPageBtn = new ButtonBuilder()
-      .setCustomId(`media:reactors:${post.id}:${currentPage + 1}`)
-      .setLabel('▶️')
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(currentPage >= totalPages - 1);
-
-    navRow.addComponents(prevPageBtn, counterBtn, nextPageBtn);
-  }
-
-  const backBtn = new ButtonBuilder()
-    .setCustomId(`media:reactorsback:${post.id}`)
-    .setLabel('رجوع / Back')
-    .setStyle(ButtonStyle.Secondary);
-  try { backBtn.setEmoji(DEFAULT_EMOJI.back); } catch { /* ignore */ }
-
-  navRow.addComponents(backBtn);
-  container.addActionRowComponents(navRow);
-
-  container.addTextDisplayComponents(
-    new TextDisplayBuilder().setContent(`-# ${config.botName} · Media Show · Reactors`),
-  );
-
-  log('info', 'reactors_view_built', {
-    postId: post.id,
-    page: currentPage,
-    totalPages,
-    totalReactors: total,
-    shownCount: pageUsers.length,
-  });
-
-  return container;
 }
 
 // ============================================================
@@ -1177,6 +1048,7 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
 
   const attachments = [...message.attachments.values()];
 
+  // ✅ تشخيص مفصّل للمرفقات
   if (attachments.length > 0) {
     log('info', 'message_media_detect', {
       messageId: message.id,
@@ -1198,6 +1070,7 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
     if (message.author.bot) return;
     if (message.system) return;
     if (attachments.length > 0) {
+      // ✅ رسالة تحتوي مرفقات غير مدعومة — لا تُصنّف كنص خالص، ولا تُحذف
       log('info', 'unsupported_attachments_kept', {
         messageId: message.id,
         count: attachments.length,
@@ -1257,6 +1130,7 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
     return;
   }
 
+  // ✅ فلترة الحجم قبل التنزيل (مع تسجيل الأسباب)
   const maxSlice = supported.slice(0, MAX_ATTACHMENTS);
   const filtered: typeof maxSlice = [];
   let oversizedCount = 0;
@@ -1347,6 +1221,7 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
       diskUsed,
     });
     try { await deleteMediaPost(postId); deleteMediaForPost(postId); } catch { /* ignore */ }
+    // ✅ رسالة المصدر لا تُحذف — نتركها سليمة للمستخدم
     return;
   }
 
@@ -1379,12 +1254,14 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
     displayMsg = await textChannel.send(payload);
     log('info', 'post_sent', { displayMsgId: displayMsg.id, postId, filesSent: files.length });
   } catch (sendErr: any) {
+    // ✅ سبب شائع: حجم الملف يتجاوز حد رفع السيرفر (tier boost)
     log('warn', 'post_send_with_files_failed', {
       postId,
       filesSent: files.length,
       error: sendErr?.message ?? 'unknown',
     });
 
+    // Fallback: استخدام CDN URLs الأصلية من رسالة المصدر (لا رفع ملفات)
     const cdnGallery: GalleryItem[] = [];
     for (const r of downloadResults) {
       if (!r) continue;
@@ -1472,6 +1349,8 @@ async function handleMediaMessage(client: Client, message: Message): Promise<voi
     }
   }
 
+  // ✅ حذف رسالة المصدر فقط عند النجاح الكامل بدون CDN fallback
+  // (في CDN fallback: نحتفظ بالمصدر لأن الرابط قد ينتهي)
   if (!usedCdnFallback) {
     try {
       const me = guildRef.members.me;
@@ -1534,6 +1413,7 @@ async function buildViewAllContainer(
         gallery.addItems(new MediaGalleryItemBuilder().setURL(item.url).setDescription(item.description.slice(0, 1024)));
       }
       container.addMediaGalleryComponents(gallery);
+      // ✅ سجل منفصل: عدد عناصر الغاليري (CDN أو attachment) — الفرق عن files عدد طبيعي
       log('info', 'viewall_gallery_built', {
         postId: post.id,
         galleryCount: galleryItems.length,
@@ -1587,26 +1467,7 @@ async function buildViewAllContainer(
     .setStyle(ButtonStyle.Secondary)
     .setDisabled(true);
 
-  // ✅ زر جديد: عرض جميع المتفاعلين (لا يغيّر الوظائف الحالية)
-  const viewReactorsBtn = new ButtonBuilder()
-    .setCustomId(`media:reactors:${post.id}:0`)
-    .setLabel(reactionCount > 0 ? `View ${reactionCount} Reactors` : 'No Reactors')
-    .setStyle(ButtonStyle.Secondary)
-    .setDisabled(reactionCount === 0);
-  await applyButtonEmoji(
-    viewReactorsBtn, client, guild ?? null,
-    channelCfg?.reaction_emoji, DEFAULT_EMOJI.reaction, 'reaction_emoji',
-  );
-
-  // صف التنقل الأول (كما هو)
-  container.addActionRowComponents(
-    new ActionRowBuilder<ButtonBuilder>().addComponents(prevBtn, openBtn, counterBtn, nextBtn),
-  );
-  // صف المتفاعلين (جديد)
-  container.addActionRowComponents(
-    new ActionRowBuilder<ButtonBuilder>().addComponents(viewReactorsBtn),
-  );
-
+  container.addActionRowComponents(new ActionRowBuilder<ButtonBuilder>().addComponents(prevBtn, openBtn, counterBtn, nextBtn));
   container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# ${config.botName} · Media Show · <@${post.source_author_id}>`));
   return { container, files: mediaFiles };
 }
@@ -1621,14 +1482,9 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
 
   let postId: number;
   let sessionId: string | null = null;
-  let reactorPage = 0;
-
   if (action === 'share' || action === 'sharepick' || action === 'sharego' || action === 'shareno') {
     postId = Number(parts[2]);
     if (parts[3]) sessionId = parts[3];
-  } else if (action === 'reactors') {
-    postId = Number(parts[2]);
-    reactorPage = Number(parts[3]) || 0;
   } else {
     postId = Number(parts[parts.length - 1]);
   }
@@ -1655,7 +1511,6 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
   const guild = interaction.guild;
   if (!guild) return;
 
-  // ===== Share =====
   if (action === 'share') {
     await handleShareButton(interaction, post, channelCfg);
     return;
@@ -1669,51 +1524,6 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
     return;
   }
 
-  // ===== ✅ جديد: عرض جميع المتفاعلين =====
-  if (action === 'reactors') {
-    try {
-      const container = await buildReactorsViewContainer(interaction.client, post, reactorPage);
-      const payload: any = { ...(buildV2Payload(container) as any), allowedMentions: { parse: [] } };
-
-      // إذا كنا داخل رسالة ephemeral (من زر داخل View All) نحدّثها، وإلا نرسل رسالة جديدة
-      const isEphemeral = Boolean((interaction.message as any)?.flags?.has?.(MessageFlags.Ephemeral));
-      if (isEphemeral) {
-        // امسح أي مرفقات قديمة من لوحة View All قبل عرض المتفاعلين
-        payload.attachments = [];
-        await interaction.update(payload);
-      } else {
-        await interaction.reply({ ...payload, flags: payload.flags | MessageFlags.Ephemeral });
-      }
-      log('info', 'reactors_opened', { postId, page: reactorPage, mode: isEphemeral ? 'update' : 'reply' });
-    } catch (e: any) {
-      log('error', 'reactors_view_failed', { postId, page: reactorPage }, e);
-      if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
-        await interaction.reply({ content: `❌ فشل عرض المتفاعلين: ${e?.message ?? 'خطأ'}`, flags: MessageFlags.Ephemeral }).catch(() => {});
-      }
-    }
-    return;
-  }
-
-  // ===== ✅ جديد: رجوع من لوحة المتفاعلين إلى View All =====
-  if (action === 'reactorsback') {
-    try {
-      const { container, files } = await buildViewAllContainer(interaction.client, post);
-      const payload: any = { ...(buildV2Payload(container) as any), allowedMentions: { parse: [] } };
-      if (files.length > 0) payload.files = files;
-      else payload.attachments = []; // تأكد من مسح أي شيء قديم
-
-      await interaction.update(payload);
-      log('info', 'reactors_back_to_viewall', { postId, files: files.length });
-    } catch (e: any) {
-      log('error', 'reactorsback_failed', { postId }, e);
-      if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
-        await interaction.reply({ content: '❌ حدث خطأ.', flags: MessageFlags.Ephemeral }).catch(() => {});
-      }
-    }
-    return;
-  }
-
-  // ===== React toggle (كما هو) =====
   if (action === 'react') {
     await interaction.deferUpdate().catch(() => {});
     let count = 0;
@@ -1749,7 +1559,6 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
 
   if (action === 'comment') { await interaction.deferUpdate().catch(() => {}); return; }
 
-  // ===== Delete (كما هو) =====
   if (action === 'delete') {
     const isOwner = interaction.user.id === post.source_author_id;
     const isAdmin = interaction.memberPermissions?.has(PermissionFlagsBits.ManageMessages) ?? false;
@@ -1759,6 +1568,7 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
       return;
     }
 
+    // ✅ أقرّ بالتفاعل مبكرًا قبل عمليات الحذف الطويلة (تجاوز 3s → 10062 Unknown interaction)
     try {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     } catch (e) {
@@ -1828,6 +1638,7 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
       log('warn', 'delete_db_failed', { postId }, e);
     }
 
+    // ✅ فصل نتيجة الحذف عن نتيجة الرد
     const parts2: string[] = [];
     if (postDeleted) parts2.push('✅ تم حذف العرض');
     if (threadDeleted) parts2.push('✅ Thread');
@@ -1844,7 +1655,6 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
     return;
   }
 
-  // ===== View All (كما هو، لا تغيير) =====
   if (action === 'viewall') {
     try {
       const { container, files } = await buildViewAllContainer(interaction.client, post);
@@ -1860,7 +1670,6 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
     return;
   }
 
-  // ===== Media navigation (كما هو) =====
   if (action === 'nav') {
     const dir = parts[2];
     if (dir === 'count') { await interaction.deferUpdate().catch(() => {}); return; }
@@ -1880,7 +1689,6 @@ async function handleMediaButton(interaction: ButtonInteraction): Promise<void> 
       const { container, files } = await buildViewAllContainer(interaction.client, newPost);
       const payload: any = { ...(buildV2Payload(container) as any), allowedMentions: { parse: [] } };
       if (files.length > 0) payload.files = files;
-      else payload.attachments = [];
       await interaction.update(payload);
       log('info', 'viewall_message_update_success', { to: newPostId, dir, attachmentFiles: files.length });
     } catch (e: any) {
@@ -1984,6 +1792,7 @@ export function registerMediaShow(client: Client): void {
     try { await handleMediaButton(interaction); }
     catch (e) {
       log('error', 'media_button_unhandled', { customId: interaction.customId }, e);
+      // ✅ لا نحاول الرد مرة أخرى إذا كان الـ interaction قد تم التعامل معه (10062)
       if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
         await interaction.reply({ content: '❌ حدث خطأ.', flags: MessageFlags.Ephemeral }).catch(() => {});
       }
@@ -2011,5 +1820,5 @@ export function registerMediaShow(client: Client): void {
   });
 
   startStorageCleanup();
-  log('info', 'registered', { cleanup: 'scheduled', archive: 'enabled', shareUi: 'componentsV2+userSelect', shareDm: 'reconstructedPostWithSharer', viewAllCustomizable: true, noteRemoved: true, resultNoteRemoved: true, videoSupport: 'extended-mime+ext', reactorsView: 'paginated-pageSize40' });
+  log('info', 'registered', { cleanup: 'scheduled', archive: 'enabled', shareUi: 'componentsV2+userSelect', shareDm: 'reconstructedPostWithSharer', viewAllCustomizable: true, noteRemoved: true, resultNoteRemoved: true, videoSupport: 'extended-mime+ext' });
 }
