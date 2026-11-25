@@ -1,6 +1,7 @@
 // Unit tests for the single-panel navigation flow (pure helpers).
 // Run with: npm run test:navigation
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   popNavigation,
   pushNavigation,
@@ -79,6 +80,15 @@ test('render closures are re-invoked on every panel refresh', async () => {
   await fresh.render();
   await fresh.render();
   assert.equal(renders, 2);
+});
+
+test('Start Meeting navigates to the dead-player view (regression)', () => {
+  const source = readFileSync(
+    new URL('../src/amongus/interactions.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(source, /await showView\(\s*interaction,\s*deadSelectView\(/);
+  assert.doesNotMatch(source, /editV2\(interaction,\s*buildDeadSelectPanel/);
 });
 
 console.log(`\n✅ ${passed} navigation tests passed.`);

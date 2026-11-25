@@ -669,7 +669,13 @@ async function showDeadSelection(
     expiresAt: Date.now() + MEETING_TTL_MS,
   };
   meetingDrafts.set(key, draft);
-  await editV2(interaction, buildDeadSelectPanel(ctx.guild.id, session.session_id, draft, notice));
+  // Navigate to the view — editV2 only re-renders the CURRENT view, so
+  // passing a container alone would leave the main panel on screen.
+  await showView(
+    interaction,
+    deadSelectView(ctx.guild, interaction.user.id, session.session_id, draft),
+  );
+  if (notice) await renderPanelView(interaction.client, ctx.guild.id, notice, interaction);
 }
 
 async function handleDeadSelectionInteraction(interaction: Interaction): Promise<void> {
