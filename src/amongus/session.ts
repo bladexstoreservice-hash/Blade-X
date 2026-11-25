@@ -7,6 +7,11 @@ import { PermissionFlagsBits, type Guild, type GuildMember, type VoiceChannel } 
 import * as db from './database.js';
 import { recordEvent } from './logger.js';
 import { applyPlayerMute, persistVoiceResult, restorePlayerMute } from './voice.js';
+import {
+  getMeetingMuteOverride,
+  notifySpeakingPhaseChange,
+  notifySpeakingPlayerStatusChange,
+} from './speaking/hooks.js';
 import type { AmongUsPlayer, AmongUsSession, AmongUsSettings } from './types.js';
 
 export interface ActionResult {
@@ -196,7 +201,10 @@ async function applyPhaseToPlayers(
       continue;
     }
 
-    const shouldMute = phase === 'in_game' ? true : player.player_status === 'dead';
+    // Optional Speaking Manager may override the meeting mute decision.
+    // When absent/disabled the hook returns null and core behaviour is unchanged.
+    const speakingMute = await getMeetingMuteOverride(session.session_id, player);
+    const shouldMute = speakingMute ?? (phase === 'in_game' ? true : player.player_status === 'dead');
     const voiceResult = await applyPlayerMute(
       guild,
       member,
@@ -232,8 +240,9 @@ async function applyPhaseToPlayer(
     return warnings;
   }
 
+  const speakingMute = await getMeetingMuteOverride(session.session_id, player);
   const shouldMute =
-    session.current_phase === 'in_game' ? true : player.player_status === 'dead';
+    speakingMute ?? (session.current_phase === 'in_game' ? true : player.player_status === 'dead');
   const result = await applyPlayerMute(
     guild,
     member,
@@ -304,6 +313,7 @@ export async function startGame(
 
     await db.setAmongUsSessionPhase(session.session_id, 'in_game', `Game started by <@${actorId}>`);
     await db.setAmongUsSessionRecovery(session.session_id, false);
+    await notifySpeakingPhaseChange(session.session_id, 'in_game', actorId);
     const applied = await applyPhaseToPlayers(guild, settings, session, 'in_game');
 
     await recordEvent({
@@ -347,6 +357,9 @@ export async function startMeeting(
     }
 
     await db.setAmongUsSessionPhase(session.session_id, 'meeting', `Meeting started by <@${actorId}>`);
+    // Initialise the optional layer BEFORE mics are applied so only the
+    // correct state is written (no unmuting everyone then re-muting them).
+    await notifySpeakingPhaseChange(session.session_id, 'meeting', actorId);
     const applied = await applyPhaseToPlayers(guild, settings, session, 'meeting');
 
     await recordEvent({
@@ -390,6 +403,7 @@ export async function resumeGame(
     }
 
     await db.setAmongUsSessionPhase(session.session_id, 'in_game', `Game resumed by <@${actorId}>`);
+    await notifySpeakingPhaseChange(session.session_id, 'in_game', actorId);
     const applied = await applyPhaseToPlayers(guild, settings, session, 'in_game');
 
     await recordEvent({
@@ -511,6 +525,8 @@ export async function endRound(
       return { ok: false, message: '❌ لا توجد جولة نشطة لإنهائها.' };
     }
 
+    // Stop any optional speaking queue before mics are restored.
+    await notifySpeakingPhaseChange(session.session_id, 'round_ended', actorId);
     const warnings = await restoreAllPlayers(guild, settings, session, 'Among Us: round ended');
 
     // Keep the participant list, but reset death markers for the next round.
@@ -563,6 +579,7 @@ export async function endSession(
     const session = await validateSession(sessionId, guild.id);
     if (!session) return { ok: false, message: '❌ الجلسة غير موجودة أو منتهية.' };
 
+    await notifySpeakingPhaseChange(session.session_id, 'ended', actorId);
     const warnings = await restoreAllPlayers(guild, settings, session, 'Among Us: session ended');
     await db.endAmongUsSession(session.session_id);
 
@@ -610,6 +627,7 @@ export async function markPlayerDead(
     }
 
     await db.updateAmongUsPlayer(session.session_id, player.user_id, { player_status: 'dead' });
+    await notifySpeakingPlayerStatusChange(session.session_id, player.user_id, 'dead', actorId);
     const updated = await db.getAmongUsPlayer(session.session_id, player.user_id);
     const warnings = updated ? await applyPhaseToPlayer(guild, settings, session, updated) : [];
 
@@ -654,6 +672,7 @@ export async function restorePlayerAlive(
     }
 
     await db.updateAmongUsPlayer(session.session_id, player.user_id, { player_status: 'alive' });
+    await notifySpeakingPlayerStatusChange(session.session_id, player.user_id, 'alive', actorId);
     const updated = await db.getAmongUsPlayer(session.session_id, player.user_id);
     const warnings = updated ? await applyPhaseToPlayer(guild, settings, session, updated) : [];
 

@@ -5,6 +5,7 @@
 // ============================================================
 
 import { dbClient } from '../database.js';
+import { initSpeakingDatabase } from './speaking/database.js';
 import type {
   AmongUsEventRow,
   AmongUsHelperRow,
@@ -106,6 +107,8 @@ export async function initAmongUsDatabase(): Promise<void> {
       // Column already exists — expected on every normal startup.
     }
   }
+  // Optional Speaking Manager — additive tables only; core schema untouched.
+  await initSpeakingDatabase();
   console.log('[Blade X] ✅ Among Us Manager database ready.');
 }
 

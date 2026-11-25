@@ -13,6 +13,7 @@ import { initAmongUsDatabase } from './database.js';
 import { handleAmongUsCommand, handleAmongUsInteraction } from './interactions.js';
 import { restoreSessionsAfterRestart } from './session.js';
 import { handleAmongUsVoiceState } from './voice.js';
+import { registerSpeakingEngine, restoreSpeakingAfterRestart } from './speaking/engine.js';
 
 export const amongUsCommand = new SlashCommandBuilder()
   .setName('amongus')
@@ -30,6 +31,9 @@ export async function initAmongUs(): Promise<void> {
 export function registerAmongUs(client: Client): void {
   if (registered) return;
   registered = true;
+
+  // Optional feature: registers hooks only. Core behaviour stays identical.
+  registerSpeakingEngine(client);
 
   client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     try {
@@ -66,6 +70,11 @@ export function registerAmongUs(client: Client): void {
       await restoreSessionsAfterRestart(client);
     } catch (e) {
       console.error('[Blade X] ❌ Among Us recovery error:', e);
+    }
+    try {
+      await restoreSpeakingAfterRestart(client);
+    } catch (e) {
+      console.error('[Blade X] ❌ Speaking Manager recovery error:', e);
     }
   });
 }

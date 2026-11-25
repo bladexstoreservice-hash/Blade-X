@@ -12,7 +12,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "deploy:commands": "tsx src/index.ts --deploy-commands",
-    "test:turso": "tsx scripts/test-turso.ts"
+    "test:turso": "tsx scripts/test-turso.ts",
+    "test:speaking": "tsx scripts/test-speaking.ts"
   },
   "dependencies": {
     "@libsql/client": "^0.18.0",

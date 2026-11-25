@@ -19,6 +19,11 @@ import {
   updateAmongUsPlayer,
 } from './database.js';
 import { notifyHost, recordEvent } from './logger.js';
+import {
+  getMeetingMuteOverride,
+  notifySpeakingExternalOverride,
+  notifySpeakingVoicePresence,
+} from './speaking/hooks.js';
 import type { AmongUsPlayer, AmongUsSettings } from './types.js';
 import { decideRestoreAction, decideVoiceAction } from './voiceLogic.js';
 
@@ -317,7 +322,9 @@ async function applyPhaseToSinglePlayer(
     return warnings;
   }
 
-  const shouldMute = phase === 'in_game' ? true : player.player_status === 'dead';
+  // Optional Speaking Manager override (null = core rule unchanged).
+  const speakingMute = await getMeetingMuteOverride(sessionId, player);
+  const shouldMute = speakingMute ?? (phase === 'in_game' ? true : player.player_status === 'dead');
   const result = await applyPlayerMute(
     guild,
     member,
@@ -383,6 +390,7 @@ export async function handleAmongUsVoiceState(
         settings,
         session,
       });
+      await notifySpeakingExternalOverride(session.session_id, member.id);
     }
   }
 
@@ -425,6 +433,7 @@ export async function handleAmongUsVoiceState(
           });
         }
       }
+      await notifySpeakingVoicePresence(session.session_id, member.id, true);
       return;
     }
 
@@ -443,6 +452,7 @@ export async function handleAmongUsVoiceState(
         settings,
         session,
       });
+      await notifySpeakingVoicePresence(session.session_id, member.id, false);
     }
     return;
   }

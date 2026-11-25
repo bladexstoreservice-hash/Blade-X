@@ -21,6 +21,9 @@ import {
   setAmongUsSessionPanelRefs,
 } from './database.js';
 import { buildId } from './ids.js';
+import { getSpeakingSettings, getSpeakingState } from './speaking/database.js';
+import { describeSpeakingStatus } from './speaking/ui.js';
+import type { SpeakingSettings, SpeakingState } from './speaking/types.js';
 import {
   PHASE_COLORS,
   PHASE_LABELS,
@@ -37,6 +40,7 @@ export interface DashboardData {
   session: AmongUsSession | null;
   players: AmongUsPlayer[];
   helpers: string[];
+  speaking?: { settings: SpeakingSettings; state: SpeakingState | null };
 }
 
 export interface PanelUpdateResult {
@@ -151,8 +155,40 @@ function buildActionRows(data: DashboardData): ActionRowBuilder<ButtonBuilder>[]
       .setStyle(ButtonStyle.Secondary),
   );
 
+  // Independent optional layer — always reachable without affecting core actions.
+  const row3 = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(buildId('speak', guild.id, 'hub'))
+      .setLabel('Speaking Manager')
+      .setEmoji('🗣️')
+      .setStyle(ButtonStyle.Secondary),
+  );
+  if (
+    session?.current_phase === 'meeting' &&
+    data.speaking?.settings.enabled &&
+    data.speaking.state?.active
+  ) {
+    row3.addComponents(
+      new ButtonBuilder()
+        .setCustomId(buildId('speak', guild.id, 'request', session.session_id))
+        .setLabel('Request to Speak')
+        .setEmoji('🙋')
+        .setStyle(ButtonStyle.Primary),
+    );
+    if (data.speaking.settings.quickEnabled) {
+      row3.addComponents(
+        new ButtonBuilder()
+          .setCustomId(buildId('speak', guild.id, 'quick', session.session_id))
+          .setLabel('Quick Interjection')
+          .setEmoji('⚡')
+          .setStyle(ButtonStyle.Secondary),
+      );
+    }
+  }
+
   if (row1.components.length > 0) rows.push(row1);
   if (row2.components.length > 0) rows.push(row2);
+  if (row3.components.length > 0) rows.push(row3);
   return rows;
 }
 
@@ -207,6 +243,12 @@ export function buildDashboardContainer(data: DashboardData): ReturnType<typeof 
       text:
         '⚠️ **External Mute Override**\n' +
         'تم رصد تعديل Server Mute من خارج اللوحة. البوت لن يرفع أو يفرض الكتم تلقائيًا. راجع اللاعب من **Manage Players**.',
+    });
+  }
+
+  if (data.speaking) {
+    sections.push({
+      text: describeSpeakingStatus(data.speaking.settings, data.speaking.state, session?.current_phase ?? 'ended'),
     });
   }
 
@@ -283,12 +325,17 @@ async function updateDashboardMessageInternal(
 
     const players = freshSession ? await getAmongUsPlayers(freshSession.session_id) : [];
     const helpers = freshSession ? await getAmongUsHelperIds(freshSession.session_id) : [];
+    const speaking = {
+      settings: await getSpeakingSettings(guildId),
+      state: freshSession ? await getSpeakingState(freshSession.session_id) : null,
+    };
     const container = buildDashboardContainer({
       guild,
       settings,
       session: freshSession,
       players,
       helpers,
+      speaking,
     });
     const payload = { ...(buildV2Payload(container) as any), allowedMentions: { parse: [] } };
 

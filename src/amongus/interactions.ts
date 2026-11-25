@@ -78,6 +78,8 @@ import {
   type AmongUsSettings,
 } from './types.js';
 import { buildV2Panel, buildV2Payload } from '../ui/v2.js';
+import { handleSpeakingInteraction } from './speaking/interactions.js';
+import { buildDeadSelectPanel } from './speaking/ui.js';
 
 // ============================================================
 // Small shared helpers
@@ -99,6 +101,18 @@ interface CreationDraft {
 
 const creationDrafts = new Map<string, CreationDraft>();
 const CREATION_TTL_MS = 10 * 60_000;
+
+interface MeetingDraft {
+  guildId: string;
+  hostId: string;
+  sessionId: string;
+  selected: Set<string>;
+  available: Array<{ id: string; name: string }>;
+  expiresAt: number;
+}
+
+const meetingDrafts = new Map<string, MeetingDraft>();
+const MEETING_TTL_MS = 10 * 60_000;
 
 function creationKey(guildId: string, userId: string): string {
   return `${guildId}:${userId}`;
@@ -311,6 +325,11 @@ export async function handleAmongUsCommand(
 // Interaction router
 // ============================================================
 export async function handleAmongUsInteraction(interaction: Interaction): Promise<boolean> {
+  // Modals are not MessageComponents — route them before the guard below.
+  if (interaction.isModalSubmit() && isAmongUsId(interaction.customId)) {
+    await handleSpeakingInteraction(interaction);
+    return true;
+  }
   if (!interaction.isMessageComponent()) return false;
   if (!isAmongUsId(interaction.customId)) return false;
 
@@ -336,6 +355,12 @@ export async function handleAmongUsInteraction(interaction: Interaction): Promis
       return true;
     case 'helpers':
       await handleHelpersInteraction(interaction);
+      return true;
+    case 'speak':
+      await handleSpeakingInteraction(interaction);
+      return true;
+    case 'meet':
+      await handleDeadSelectionInteraction(interaction);
       return true;
     default:
       return true;
@@ -453,13 +478,18 @@ async function handlePanelInteraction(interaction: Interaction): Promise<void> {
     return;
   }
 
+  // Start Meeting now opens a dead-player selection window first.
+  if (action === 'meeting') {
+    await deferEphemeral(interaction);
+    await showDeadSelection(interaction, ctx, session);
+    return;
+  }
+
   await deferEphemeral(interaction);
 
   let result;
   if (action === 'start') {
     result = await startGame(guild, ctx.settings, session.session_id, interaction.user.id);
-  } else if (action === 'meeting') {
-    result = await startMeeting(guild, ctx.settings, session.session_id, interaction.user.id);
   } else if (action === 'resume') {
     result = await resumeGame(guild, ctx.settings, session.session_id, interaction.user.id);
   } else if (action === 'endround') {
@@ -488,6 +518,107 @@ async function editPlain(interaction: Interaction, content: string): Promise<voi
   } catch {
     // Expired interaction.
   }
+}
+
+// ============================================================
+// Start Meeting → Select Dead Players (ephemeral User/User-like select)
+// Uses a StringSelectMenu over session participants because Discord
+// does not allow User Select Menus inside a Modal.
+// ============================================================
+function meetingKey(guildId: string, userId: string): string {
+  return `${guildId}:${userId}`;
+}
+
+async function showDeadSelection(
+  interaction: Interaction,
+  ctx: Ctx,
+  session: AmongUsSession,
+  notice?: string,
+): Promise<void> {
+  const players = await getAmongUsPlayers(session.session_id);
+  const available = players
+    .filter((p) => p.player_status !== 'dead' && p.player_status !== 'pending')
+    .map((p) => ({ id: p.user_id, name: p.display_name ?? p.user_id }));
+  const key = meetingKey(ctx.guild.id, interaction.user.id);
+  const draft: MeetingDraft = {
+    guildId: ctx.guild.id,
+    hostId: interaction.user.id,
+    sessionId: session.session_id,
+    selected: new Set<string>(),
+    available,
+    expiresAt: Date.now() + MEETING_TTL_MS,
+  };
+  meetingDrafts.set(key, draft);
+  await editV2(interaction, buildDeadSelectPanel(ctx.guild.id, session.session_id, draft, notice));
+}
+
+async function handleDeadSelectionInteraction(interaction: Interaction): Promise<void> {
+  if (!interaction.isMessageComponent()) return;
+  const parts = parseId(interaction.customId);
+  const guild = interaction.guild;
+  if (!guild || parts[2] !== guild.id) return;
+
+  const ctx = await requireCtx(interaction);
+  if (!ctx) return;
+  const session = await loadSessionOrReply(interaction, ctx, parts[3]);
+  if (!session) return;
+  if (!(await canOperateOrReply(interaction, ctx, session))) return;
+
+  const key = meetingKey(guild.id, interaction.user.id);
+  const draft = meetingDrafts.get(key);
+  if (!draft || draft.expiresAt < Date.now() || draft.sessionId !== session.session_id) {
+    meetingDrafts.delete(key);
+    await replyEphemeral(interaction, '⌛ انتهت صلاحية نافذة اختيار الأموات. اضغط Start Meeting من جديد.');
+    return;
+  }
+
+  const action = parts[4];
+  if (action === 'select' && interaction.isStringSelectMenu()) {
+    for (const userId of interaction.values) {
+      if (draft.available.some((m) => m.id === userId)) draft.selected.add(userId);
+    }
+    draft.expiresAt = Date.now() + MEETING_TTL_MS;
+    await updateV2(interaction, buildDeadSelectPanel(guild.id, session.session_id, draft));
+    return;
+  }
+
+  if (action === 'cancel') {
+    meetingDrafts.delete(key);
+    await updateV2(
+      interaction,
+      buildV2Panel({
+        accentColor: 0x747f8d,
+        title: '✖️ Start Meeting Cancelled',
+        sections: [{ text: 'تم الإلغاء — لم تتغير المرحلة أو حالات اللاعبين أو المايكات.' }],
+        footerText: 'Blade X · Among Us Manager',
+      }),
+    );
+    return;
+  }
+
+  await deferUpdateSafe(interaction);
+
+  if (action === 'confirm') {
+    // Server-side validation: only current session participants may be marked dead.
+    const validSelected: string[] = [];
+    for (const userId of draft.selected) {
+      const player = await getAmongUsPlayer(session.session_id, userId);
+      if (!player || player.player_status === 'dead' || player.player_status === 'pending') continue;
+      validSelected.push(userId);
+    }
+    for (const userId of validSelected) {
+      await markPlayerDead(guild, ctx.settings, session.session_id, userId, interaction.user.id);
+    }
+  }
+  // Skip intentionally keeps every previous dead state untouched.
+
+  const result = await startMeeting(guild, ctx.settings, session.session_id, interaction.user.id);
+  meetingDrafts.delete(key);
+  const panelError = await refreshPanel(interaction, ctx, result.session ?? null);
+  await editPlain(
+    interaction,
+    `${result.message}${panelError ? `\n⚠️ ${panelError}` : ''}`,
+  );
 }
 
 // ============================================================
@@ -1167,6 +1298,11 @@ function buildSettingsPanel(
         .setLabel('Republish Panel')
         .setEmoji('📌')
         .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(buildId('speak', ctx.guild.id, 'settings'))
+        .setLabel('Speaking Settings')
+        .setEmoji('🗣️')
+        .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
         .setCustomId(buildId('settings', ctx.guild.id, 'back'))
         .setLabel('Close')
