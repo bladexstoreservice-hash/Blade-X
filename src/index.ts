@@ -25,6 +25,7 @@ import { seedDefaultTexts } from './texts.js';
 import { TEXT_REGISTRY, COLOR_REGISTRY, initTextRegistry } from './textRegistry.js';
 import { seedEmojiDefaults, setEmojiClient, initEmojiRegistry } from './emojiRegistry.js';
 import { startDashboard } from './dashboard.js';
+import { amongUsCommand, initAmongUs, registerAmongUs } from './amongus/index.js';
 
 const client = new Client({
   intents: [
@@ -53,6 +54,7 @@ async function deployCommands(): Promise<void> {
     { name: 'support-panel', description: 'نشر/تحديث لوحة الدعم', default_member_permissions: '8' },
     componentsV2Command,
     rolePanelCommand,
+    amongUsCommand,
   ];
   try {
     await rest.put(Routes.applicationGuildCommands(config.clientId, config.guildId), { body: commands });
@@ -209,6 +211,7 @@ process.on('SIGTERM', shutdown);
 async function main(): Promise<void> {
   console.log('[Blade X] Starting application...');
   await initDatabase();
+  await initAmongUs();
 
   if (process.argv.includes('--deploy-commands')) {
     await deployCommands();
@@ -238,6 +241,7 @@ async function main(): Promise<void> {
   registerSpamTrap(client);
   registerMediaShow(client);
   registerSupport(client);
+  registerAmongUs(client);
   setMovieClient(client);
   setWelcomeClient(client);
 
