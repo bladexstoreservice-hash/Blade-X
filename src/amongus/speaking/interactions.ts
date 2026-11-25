@@ -27,7 +27,13 @@ import {
 } from '../permissions.js';
 import { resumeGame } from '../session.js';
 import type { AmongUsSession, AmongUsSettings } from '../types.js';
-import { buildV2Payload } from '../../ui/v2.js';
+import {
+  currentViewKind,
+  goBack,
+  navigateTo,
+  renderPanelView,
+  type PanelView,
+} from '../navigation.js';
 import {
   endSpeakingDiscussion,
   extendCurrentTurn,
@@ -71,36 +77,18 @@ async function replyEphemeral(interaction: Interaction, content: string): Promis
 }
 
 async function deferEphemeral(interaction: Interaction): Promise<void> {
-  if (!interaction.isRepliable() || interaction.replied || interaction.deferred) return;
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => undefined);
+  if (!interaction.isMessageComponent() || interaction.replied || interaction.deferred) return;
+  await interaction.deferUpdate().catch(() => undefined);
 }
 
-async function editV2(
-  interaction: Interaction,
-  container: ReturnType<typeof buildSpeakingHub>,
-): Promise<void> {
-  if (!interaction.isRepliable()) return;
-  const payload = { ...(buildV2Payload(container) as any), allowedMentions: { parse: [] } };
-  try {
-    if (interaction.deferred || interaction.replied) await interaction.editReply(payload);
-    else await interaction.reply({ ...payload, flags: payload.flags | MessageFlags.Ephemeral });
-  } catch {
-    // Stale interaction.
-  }
+/** All view changes edit the one shared panel message. */
+async function editV2(interaction: Interaction, notice?: string): Promise<void> {
+  if (!interaction.guild) return;
+  await renderPanelView(interaction.client, interaction.guild.id, notice, interaction);
 }
 
-async function updateV2(
-  interaction: Interaction,
-  container: ReturnType<typeof buildSpeakingHub>,
-): Promise<void> {
-  if (!interaction.isMessageComponent()) return;
-  const payload = { ...(buildV2Payload(container) as any), allowedMentions: { parse: [] } };
-  try {
-    if (interaction.deferred || interaction.replied) await interaction.editReply(payload);
-    else await interaction.update(payload);
-  } catch {
-    // Stale interaction.
-  }
+async function updateV2(interaction: Interaction, notice?: string): Promise<void> {
+  await editV2(interaction, notice);
 }
 
 async function requireCtx(interaction: Interaction): Promise<SpeakCtx | null> {
@@ -132,21 +120,67 @@ async function canOperate(
   return canOperateSession(ctx.access, session, helpers);
 }
 
+export function speakingHubView(
+  guild: Guild,
+  userId: string,
+  sessionId?: string | null,
+): PanelView {
+  return {
+    kind: 'speaking',
+    sessionId,
+    render: async (notice) => {
+      const settings = await getSpeakingSettings(guild.id);
+      const active = await getActiveAmongUsSession(guild.id);
+      const sid = sessionId ?? active?.session_id ?? null;
+      const state = sid ? await getSpeakingState(sid) : null;
+      return buildSpeakingHub(guild.id, settings, state, notice ?? undefined, sid);
+    },
+  };
+}
+
+/** Used by Start Meeting when the optional layer is enabled. */
+export async function openSpeakingHubFromPanel(
+  interaction: Interaction,
+  guild: Guild,
+  sessionId: string,
+): Promise<void> {
+  await navigateTo(
+    interaction.client,
+    guild.id,
+    speakingHubView(guild, interaction.user.id, sessionId),
+    interaction,
+  );
+}
+
+function speakingSettingsView(guild: Guild): PanelView {
+  return {
+    kind: 'speaking-settings',
+    render: async (notice) =>
+      buildSpeakingSettingsPanel(
+        guild.id,
+        await getSpeakingSettings(guild.id),
+        notice ?? undefined,
+      ),
+  };
+}
+
 async function showHub(
   interaction: Interaction,
   ctx: SpeakCtx,
   notice?: string,
   sessionId?: string | null,
 ): Promise<void> {
-  const session = sessionId
-    ? await getAmongUsSession(sessionId)
-    : await getActiveAmongUsSession(ctx.guild.id);
-  const settings = await getSpeakingSettings(ctx.guild.id);
-  const state = session ? await getSpeakingState(session.session_id) : null;
-  await updateV2(
+  if (currentViewKind(ctx.guild.id) === 'speaking') {
+    await editV2(interaction, notice);
+    return;
+  }
+  await navigateTo(
+    interaction.client,
+    ctx.guild.id,
+    speakingHubView(ctx.guild, interaction.user.id, sessionId),
     interaction,
-    buildSpeakingHub(ctx.guild.id, settings, state, notice, session?.session_id),
   );
+  if (notice) await editV2(interaction, notice);
 }
 
 async function applyResult(
@@ -183,12 +217,15 @@ async function handleModal(interaction: Interaction): Promise<boolean> {
   }
   const raw = interaction.fields.getTextInputValue('duration');
   const result = await setSpeakingDuration(guild.id, parts[4], raw, interaction.user.id);
-  await deferEphemeral(interaction);
-  const settings = await getSpeakingSettings(guild.id);
-  await editV2(
-    interaction,
-    buildSpeakingSettingsPanel(guild.id, settings, `${result.ok ? '✅' : '❌'} ${result.message}`),
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => undefined);
+  await renderPanelView(
+    interaction.client,
+    guild.id,
+    `${result.ok ? '✅' : '❌'} ${result.message}`,
   );
+  await interaction
+    .editReply({ content: `${result.ok ? '✅' : '❌'} ${result.message}` })
+    .catch(() => undefined);
   return true;
 }
 
@@ -225,8 +262,7 @@ export async function handleSpeakingInteraction(interaction: Interaction): Promi
       await replyEphemeral(interaction, '❌ Speaking Settings متاحة للإدارة فقط.');
       return true;
     }
-    const settings = await getSpeakingSettings(guild.id);
-    await updateV2(interaction, buildSpeakingSettingsPanel(guild.id, settings));
+    await navigateTo(interaction.client, guild.id, speakingSettingsView(guild), interaction);
     return true;
   }
 
@@ -276,13 +312,26 @@ export async function handleSpeakingInteraction(interaction: Interaction): Promi
         interaction.user.id,
       );
     }
-    const fresh = await getSpeakingSettings(guild.id);
-    await updateV2(interaction, buildSpeakingSettingsPanel(guild.id, fresh, `${result.ok ? '✅' : '❌'} ${result.message}`));
+    await editV2(interaction, `${result.ok ? '✅' : '❌'} ${result.message}`);
     return true;
   }
 
-  if (action === 'hub' || action === 'refresh' || action === 'back') {
-    await showHub(interaction, ctx, action === 'back' ? 'تم الرجوع إلى لوحة Speaking Manager.' : undefined, validSession?.session_id);
+  if (action === 'back') {
+    await goBack(interaction.client, guild.id, interaction);
+    return true;
+  }
+
+  if (action === 'hub') {
+    if (currentViewKind(guild.id) === 'speaking-settings') {
+      await goBack(interaction.client, guild.id, interaction);
+    } else {
+      await showHub(interaction, ctx, undefined, validSession?.session_id);
+    }
+    return true;
+  }
+
+  if (action === 'refresh') {
+    await editV2(interaction);
     return true;
   }
 

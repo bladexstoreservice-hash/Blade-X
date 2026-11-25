@@ -193,6 +193,14 @@ function buildActionRows(data: DashboardData): ActionRowBuilder<ButtonBuilder>[]
 }
 
 export function buildDashboardContainer(data: DashboardData): ReturnType<typeof buildV2Panel> {
+  return buildDashboardContainerWithNotice(data, undefined);
+}
+
+/** Main-panel builder with an optional in-panel notice (no chat messages). */
+export function buildDashboardContainerWithNotice(
+  data: DashboardData,
+  notice?: string | null,
+): ReturnType<typeof buildV2Panel> {
   const { guild, settings, session, players } = data;
   const info = phaseInfo(session);
 
@@ -252,6 +260,8 @@ export function buildDashboardContainer(data: DashboardData): ReturnType<typeof 
     });
   }
 
+  if (notice) sections.push({ text: `ℹ️ ${notice}` });
+
   if (!session) {
     sections.push({ text: '-# اضغط **Create Session** لبدء جلسة جديدة من الروم الصوتي المحدد.' });
   } else if (session.current_phase === 'waiting') {
@@ -269,6 +279,38 @@ export function buildDashboardContainer(data: DashboardData): ReturnType<typeof 
     actionRows: buildActionRows(data) as any,
     footerText: 'Blade X · Among Us Manager',
   });
+}
+
+/** Build the main panel from live DB state — shared by the panel updater and navigator. */
+export async function buildGuildDashboardContainer(
+  client: Client,
+  guildId: string,
+  settings: AmongUsSettings,
+  session: AmongUsSession | null,
+  notice?: string | null,
+): Promise<ReturnType<typeof buildV2Panel> | null> {
+  const guild =
+    client.guilds.cache.get(guildId) ?? (await client.guilds.fetch(guildId).catch(() => null));
+  if (!guild) return null;
+  const freshSession = session
+    ? await getAmongUsSession(session.session_id)
+    : await getActiveAmongUsSession(guildId);
+  const players = freshSession ? await getAmongUsPlayers(freshSession.session_id) : [];
+  const helpers = freshSession ? await getAmongUsHelperIds(freshSession.session_id) : [];
+  return buildDashboardContainerWithNotice(
+    {
+      guild,
+      settings,
+      session: freshSession,
+      players,
+      helpers,
+      speaking: {
+        settings: await getSpeakingSettings(guildId),
+        state: freshSession ? await getSpeakingState(freshSession.session_id) : null,
+      },
+    },
+    notice,
+  );
 }
 
 function isUnknownMessageError(e: unknown): boolean {
@@ -323,20 +365,8 @@ async function updateDashboardMessageInternal(
       return { ok: false, error: 'قناة لوحة التحكم غير موجودة أو ليست قناة نصية.' };
     }
 
-    const players = freshSession ? await getAmongUsPlayers(freshSession.session_id) : [];
-    const helpers = freshSession ? await getAmongUsHelperIds(freshSession.session_id) : [];
-    const speaking = {
-      settings: await getSpeakingSettings(guildId),
-      state: freshSession ? await getSpeakingState(freshSession.session_id) : null,
-    };
-    const container = buildDashboardContainer({
-      guild,
-      settings,
-      session: freshSession,
-      players,
-      helpers,
-      speaking,
-    });
+    const container = await buildGuildDashboardContainer(client, guildId, settings, session);
+    if (!container) return { ok: false, error: 'السيرفر غير متاح.' };
     const payload = { ...(buildV2Payload(container) as any), allowedMentions: { parse: [] } };
 
     let message: Message | null = null;

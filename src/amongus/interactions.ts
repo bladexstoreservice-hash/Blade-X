@@ -78,8 +78,20 @@ import {
   type AmongUsSettings,
 } from './types.js';
 import { buildV2Panel, buildV2Payload } from '../ui/v2.js';
-import { handleSpeakingInteraction } from './speaking/interactions.js';
+import {
+  handleSpeakingInteraction,
+  openSpeakingHubFromPanel,
+} from './speaking/interactions.js';
+import { getSpeakingSettings } from './speaking/database.js';
 import { buildDeadSelectPanel } from './speaking/ui.js';
+import {
+  ensureMainPanel,
+  goBack,
+  navigateTo,
+  renderPanelView,
+  resetToMain,
+  type PanelView,
+} from './navigation.js';
 
 // ============================================================
 // Small shared helpers
@@ -146,9 +158,9 @@ async function replyEphemeral(interaction: Interaction, content: string): Promis
   }
 }
 
+/** Acknowledge by updating the shared panel message — never a new reply. */
 async function deferEphemeral(interaction: Interaction): Promise<void> {
-  if (!interaction.isRepliable() || interaction.replied || interaction.deferred) return;
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => undefined);
+  await deferUpdateSafe(interaction);
 }
 
 async function deferUpdateSafe(interaction: Interaction): Promise<void> {
@@ -156,32 +168,36 @@ async function deferUpdateSafe(interaction: Interaction): Promise<void> {
   await interaction.deferUpdate().catch(() => undefined);
 }
 
+/** Re-render whatever view is currently open in the single panel. */
 async function updateV2(
   interaction: Interaction,
-  container: ReturnType<typeof buildV2Panel>,
+  _container?: ReturnType<typeof buildV2Panel>,
 ): Promise<void> {
-  if (!interaction.isMessageComponent()) return;
-  const payload = { ...(buildV2Payload(container) as any), allowedMentions: { parse: [] } };
-  try {
-    if (interaction.deferred || interaction.replied) await interaction.editReply(payload);
-    else await interaction.update(payload);
-  } catch {
-    // Old/stale ephemeral message.
-  }
+  if (!interaction.guild) return;
+  await renderPanelView(interaction.client, interaction.guild.id, undefined, interaction);
 }
 
+/** Same as updateV2 — the old "new ephemeral message" path is gone. */
 async function editV2(
   interaction: Interaction,
-  container: ReturnType<typeof buildV2Panel>,
+  _container?: ReturnType<typeof buildV2Panel>,
 ): Promise<void> {
-  if (!interaction.isRepliable()) return;
-  const payload = { ...(buildV2Payload(container) as any), allowedMentions: { parse: [] } };
-  try {
-    if (interaction.deferred || interaction.replied) await interaction.editReply(payload);
-    else await interaction.reply({ ...payload, flags: payload.flags | MessageFlags.Ephemeral });
-  } catch {
-    // Interaction expired.
-  }
+  await updateV2(interaction);
+}
+
+async function showView(interaction: Interaction, view: PanelView): Promise<void> {
+  if (!interaction.guild) return;
+  await navigateTo(interaction.client, interaction.guild.id, view, interaction);
+}
+
+async function backView(interaction: Interaction): Promise<void> {
+  if (!interaction.guild) return;
+  await goBack(interaction.client, interaction.guild.id, interaction);
+}
+
+async function showMain(interaction: Interaction, notice?: string): Promise<void> {
+  if (!interaction.guild) return;
+  await resetToMain(interaction.client, interaction.guild.id, interaction, notice);
 }
 
 async function requireCtx(interaction: Interaction): Promise<Ctx | null> {
@@ -206,19 +222,9 @@ async function requireCtx(interaction: Interaction): Promise<Ctx | null> {
 async function refreshPanel(
   interaction: Interaction,
   ctx: Ctx,
-  session: AmongUsSession | null,
+  _session: AmongUsSession | null,
 ): Promise<string | null> {
-  const freshSettings = await getAmongUsSettings(ctx.guild.id);
-  if (!freshSettings) return 'إعدادات النظام غير موجودة.';
-  const freshSession = session
-    ? await getAmongUsSession(session.session_id)
-    : await getActiveAmongUsSession(ctx.guild.id);
-  const result = await updateDashboardMessage(
-    interaction.client,
-    ctx.guild.id,
-    freshSettings,
-    freshSession,
-  );
+  const result = await renderPanelView(interaction.client, ctx.guild.id, undefined, interaction);
   return result.ok ? null : result.error ?? 'تعذر تحديث لوحة التحكم.';
 }
 
@@ -247,6 +253,136 @@ async function canOperateOrReply(
     return false;
   }
   return true;
+}
+
+// ============================================================
+// Single-panel view factories — each render re-reads live state
+// ============================================================
+async function viewCtx(guild: Guild, userId: string): Promise<Ctx | null> {
+  const member = await guild.members.fetch(userId).catch(() => null);
+  const settings = await getAmongUsSettings(guild.id);
+  if (!member || !settings) return null;
+  return { guild, member, settings, access: getAccessContext(member, settings) };
+}
+
+function createView(guild: Guild, userId: string, draft: CreationDraft): PanelView {
+  return {
+    kind: 'create',
+    render: async () => {
+      const ctx = await viewCtx(guild, userId);
+      if (!ctx) throw new Error('Session settings are no longer available.');
+      return buildCreatePanel(ctx, draft);
+    },
+  };
+}
+
+function playersView(guild: Guild, userId: string, sessionId: string): PanelView {
+  return {
+    kind: 'players',
+    sessionId,
+    render: async () => {
+      const ctx = await viewCtx(guild, userId);
+      const session = await getAmongUsSession(sessionId);
+      if (!ctx || !session) throw new Error('Session is no longer available.');
+      return buildPlayerListPanel(ctx, session, await getAmongUsPlayers(sessionId));
+    },
+  };
+}
+
+function playerView(
+  guild: Guild,
+  userId: string,
+  sessionId: string,
+  targetUserId: string,
+): PanelView {
+  return {
+    kind: 'player',
+    sessionId,
+    userId: targetUserId,
+    render: async (notice) => {
+      const ctx = await viewCtx(guild, userId);
+      const session = await getAmongUsSession(sessionId);
+      const player = await getAmongUsPlayer(sessionId, targetUserId);
+      if (!ctx || !session || !player) throw new Error('Player is no longer available.');
+      return buildPlayerActionPanel(ctx, session, player, notice ?? undefined);
+    },
+  };
+}
+
+function helpersView(guild: Guild, userId: string, sessionId: string): PanelView {
+  return {
+    kind: 'helpers',
+    sessionId,
+    render: async () => {
+      const ctx = await viewCtx(guild, userId);
+      const session = await getAmongUsSession(sessionId);
+      if (!ctx || !session) throw new Error('Session is no longer available.');
+      return buildHelpersPanel(ctx, session, await getAmongUsHelperIds(sessionId));
+    },
+  };
+}
+
+function settingsView(
+  guild: Guild,
+  userId: string,
+  check?: SetupCheckResult,
+): PanelView {
+  return {
+    kind: 'settings',
+    render: async (notice) => {
+      const ctx = await viewCtx(guild, userId);
+      if (!ctx) throw new Error('Settings are no longer available.');
+      return buildSettingsPanel(
+        ctx,
+        await getActiveAmongUsSession(guild.id),
+        notice ?? undefined,
+        check,
+      );
+    },
+  };
+}
+
+function voiceConfirmView(
+  guild: Guild,
+  userId: string,
+  channelId: string,
+  kind: 'voice' | 'control',
+): PanelView {
+  return {
+    kind: 'voice-confirm',
+    render: async () => {
+      const ctx = await viewCtx(guild, userId);
+      if (!ctx) throw new Error('Settings are no longer available.');
+      return buildVoiceConfirmPanel(ctx, channelId, kind);
+    },
+  };
+}
+
+function endConfirmView(guild: Guild, userId: string, sessionId: string): PanelView {
+  return {
+    kind: 'end-confirm',
+    sessionId,
+    render: async () => {
+      const ctx = await viewCtx(guild, userId);
+      const session = await getAmongUsSession(sessionId);
+      if (!ctx || !session) throw new Error('Session is no longer available.');
+      return buildEndSessionConfirm(ctx, session);
+    },
+  };
+}
+
+function deadSelectView(
+  guild: Guild,
+  userId: string,
+  sessionId: string,
+  draft: MeetingDraft,
+): PanelView {
+  return {
+    kind: 'dead-select',
+    sessionId,
+    render: async (notice) =>
+      buildDeadSelectPanel(guild.id, sessionId, draft, notice ?? undefined),
+  };
 }
 
 // ============================================================
@@ -284,6 +420,11 @@ export async function handleAmongUsCommand(
       return;
     }
     await startSetup(interaction);
+    const fresh = await getAmongUsSettings(guild.id);
+    const link = buildPanelLink(guild.id, fresh?.control_channel_id, fresh?.control_message_id);
+    await interaction
+      .editReply({ content: link ? `⚙️ افتح لوحة الإعدادات: ${link}` : '⚙️ تم فتح الإعدادات في لوحة التحكم.' })
+      .catch(() => undefined);
     return;
   }
 
@@ -295,7 +436,8 @@ export async function handleAmongUsCommand(
   }
 
   const session = await getActiveAmongUsSession(guild.id);
-  const panel = await updateDashboardMessage(interaction.client, guild.id, settings, session);
+  // Reuse/restore the one saved panel message — never create a second one.
+  const panel = await ensureMainPanel(interaction.client, guild.id);
   const players = session ? await getAmongUsPlayers(session.session_id) : [];
   const link = buildPanelLink(
     guild.id,
@@ -411,7 +553,7 @@ async function handlePanelInteraction(interaction: Interaction): Promise<void> {
       expiresAt: Date.now() + CREATION_TTL_MS,
     };
     creationDrafts.set(creationKey(guild.id, interaction.user.id), draft);
-    await editV2(interaction, buildCreatePanel(ctx, draft));
+    await showView(interaction, createView(guild, interaction.user.id, draft));
     return;
   }
 
@@ -420,16 +562,12 @@ async function handlePanelInteraction(interaction: Interaction): Promise<void> {
       await replyEphemeral(interaction, '❌ إعدادات السيرفر متاحة لمالك السيرفر أو الإدارة فقط.');
       return;
     }
-    await deferEphemeral(interaction);
-    const session = await getActiveAmongUsSession(guild.id);
-    await editV2(interaction, buildSettingsPanel(ctx, session));
+    await showView(interaction, settingsView(guild, interaction.user.id));
     return;
   }
 
   if (action === 'refresh') {
-    await deferEphemeral(interaction);
-    const error = await refreshPanel(interaction, ctx, null);
-    await editPlain(interaction, error ? `⚠️ ${error}` : '✅ تم تحديث لوحة التحكم.');
+    await showMain(interaction);
     return;
   }
 
@@ -442,9 +580,7 @@ async function handlePanelInteraction(interaction: Interaction): Promise<void> {
   if (!(await canOperateOrReply(interaction, ctx, session))) return;
 
   if (action === 'players') {
-    await deferEphemeral(interaction);
-    const players = await getAmongUsPlayers(session.session_id);
-    await editV2(interaction, buildPlayerListPanel(ctx, session, players));
+    await showView(interaction, playersView(guild, interaction.user.id, session.session_id));
     return;
   }
 
@@ -453,39 +589,27 @@ async function handlePanelInteraction(interaction: Interaction): Promise<void> {
       await replyEphemeral(interaction, '❌ إدارة المضيفين المساعدين متاحة للمضيف الأساسي أو الإدارة فقط.');
       return;
     }
-    await deferEphemeral(interaction);
-    const helpers = await getAmongUsHelperIds(session.session_id);
-    await editV2(interaction, buildHelpersPanel(ctx, session, helpers));
+    await showView(interaction, helpersView(guild, interaction.user.id, session.session_id));
     return;
   }
 
   if (action === 'endsession') {
-    await deferEphemeral(interaction);
-    await editV2(interaction, buildEndSessionConfirm(ctx, session));
+    await showView(interaction, endConfirmView(guild, interaction.user.id, session.session_id));
     return;
   }
 
-  if (action === 'endsession-cancel') {
-    await updateV2(
-      interaction,
-      buildV2Panel({
-        accentColor: 0x747f8d,
-        title: '✖️ End Session Cancelled',
-        sections: [{ text: 'لم يتم إنهاء الجلسة.' }],
-        footerText: 'Blade X · Among Us Manager',
-      }),
-    );
+  if (action === 'endsession-cancel' || action === 'endsession-back') {
+    await backView(interaction);
     return;
   }
 
-  // Start Meeting now opens a dead-player selection window first.
+  // Start Meeting now opens the dead-player selection INSIDE the same panel.
   if (action === 'meeting') {
-    await deferEphemeral(interaction);
     await showDeadSelection(interaction, ctx, session);
     return;
   }
 
-  await deferEphemeral(interaction);
+  await deferUpdateSafe(interaction);
 
   let result;
   if (action === 'start') {
@@ -503,21 +627,17 @@ async function handlePanelInteraction(interaction: Interaction): Promise<void> {
     return;
   }
 
-  const panelError = await refreshPanel(interaction, ctx, result.session ?? null);
-  await editPlain(
+  const panelError = await renderPanelView(interaction.client, ctx.guild.id);
+  await showMain(
     interaction,
-    `${result.message}${panelError ? `\n⚠️ ${panelError}` : ''}`,
+    `${result.message}${panelError.ok ? '' : `\n⚠️ ${panelError.error ?? 'تعذر تحديث اللوحة.'}`}`,
   );
 }
 
+/** Action results are shown inside the panel instead of as chat messages. */
 async function editPlain(interaction: Interaction, content: string): Promise<void> {
-  if (!interaction.isRepliable()) return;
-  try {
-    if (interaction.deferred || interaction.replied) await interaction.editReply({ content });
-    else await interaction.reply({ content, flags: MessageFlags.Ephemeral });
-  } catch {
-    // Expired interaction.
-  }
+  if (!interaction.guildId) return;
+  await renderPanelView(interaction.client, interaction.guildId, content, interaction);
 }
 
 // ============================================================
@@ -578,21 +698,13 @@ async function handleDeadSelectionInteraction(interaction: Interaction): Promise
       if (draft.available.some((m) => m.id === userId)) draft.selected.add(userId);
     }
     draft.expiresAt = Date.now() + MEETING_TTL_MS;
-    await updateV2(interaction, buildDeadSelectPanel(guild.id, session.session_id, draft));
+    await updateV2(interaction);
     return;
   }
 
-  if (action === 'cancel') {
+  if (action === 'cancel' || action === 'back') {
     meetingDrafts.delete(key);
-    await updateV2(
-      interaction,
-      buildV2Panel({
-        accentColor: 0x747f8d,
-        title: '✖️ Start Meeting Cancelled',
-        sections: [{ text: 'تم الإلغاء — لم تتغير المرحلة أو حالات اللاعبين أو المايكات.' }],
-        footerText: 'Blade X · Among Us Manager',
-      }),
-    );
+    await backView(interaction);
     return;
   }
 
@@ -614,11 +726,12 @@ async function handleDeadSelectionInteraction(interaction: Interaction): Promise
 
   const result = await startMeeting(guild, ctx.settings, session.session_id, interaction.user.id);
   meetingDrafts.delete(key);
-  const panelError = await refreshPanel(interaction, ctx, result.session ?? null);
-  await editPlain(
-    interaction,
-    `${result.message}${panelError ? `\n⚠️ ${panelError}` : ''}`,
-  );
+  const speakingSettings = await getSpeakingSettings(guild.id);
+  if (result.ok && speakingSettings.enabled) {
+    await openSpeakingHubFromPanel(interaction, guild, session.session_id);
+    return;
+  }
+  await showMain(interaction, result.message);
 }
 
 // ============================================================
@@ -691,6 +804,11 @@ function buildCreatePanel(ctx: Ctx, draft: CreationDraft): ReturnType<typeof bui
       .setLabel('Cancel')
       .setEmoji('✖️')
       .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId(buildId('create', ctx.guild.id, 'back'))
+      .setLabel('Back')
+      .setEmoji('◀️')
+      .setStyle(ButtonStyle.Secondary),
   );
   rows.push(buttonRow);
 
@@ -732,35 +850,29 @@ async function handleCreateInteraction(interaction: Interaction): Promise<void> 
       if (draft.available.some((m) => m.id === id)) draft.selected.add(id);
     }
     draft.expiresAt = Date.now() + CREATION_TTL_MS;
-    await updateV2(interaction, buildCreatePanel(ctx, draft));
+    await updateV2(interaction);
     return;
   }
 
   if (action === 'all' && interaction.isButton()) {
     draft.selected = new Set(draft.available.map((m) => m.id));
     draft.expiresAt = Date.now() + CREATION_TTL_MS;
-    await updateV2(interaction, buildCreatePanel(ctx, draft));
+    await updateV2(interaction);
     return;
   }
 
   if (action === 'clear' && interaction.isButton()) {
     draft.selected.clear();
     draft.expiresAt = Date.now() + CREATION_TTL_MS;
-    await updateV2(interaction, buildCreatePanel(ctx, draft));
+    await updateV2(interaction);
     return;
   }
 
-  if (action === 'cancel' && interaction.isButton()) {
-    creationDrafts.delete(key);
-    await updateV2(
-      interaction,
-      buildV2Panel({
-        accentColor: 0x747f8d,
-        title: '✖️ Creation Cancelled',
-        sections: [{ text: 'تم إلغاء إنشاء الجلسة.' }],
-        footerText: 'Blade X · Among Us Manager',
-      }),
-    );
+  if (action === 'cancel' || action === 'back') {
+    if (interaction.isButton()) {
+      creationDrafts.delete(key);
+      await backView(interaction);
+    }
     return;
   }
 
@@ -772,18 +884,7 @@ async function handleCreateInteraction(interaction: Interaction): Promise<void> 
       return;
     }
     creationDrafts.delete(key);
-    const panelError = await refreshPanel(interaction, ctx, result.session ?? null);
-    const link = buildPanelLink(
-      guild.id,
-      ctx.settings.control_channel_id,
-      (await getAmongUsSettings(guild.id))?.control_message_id,
-    );
-    await editPlain(
-      interaction,
-      `${result.message}${link ? `\n[فتح لوحة التحكم](${link})` : ''}${
-        panelError ? `\n⚠️ ${panelError}` : ''
-      }`,
-    );
+    await showMain(interaction, result.message);
     return;
   }
 }
@@ -990,13 +1091,17 @@ async function handlePlayersInteraction(interaction: Interaction): Promise<void>
       await replyEphemeral(interaction, '❌ اللاعب غير موجود في الجلسة.');
       return;
     }
-    await updateV2(interaction, buildPlayerActionPanel(ctx, session, player));
+    await showView(interaction, playerView(guild, interaction.user.id, session.session_id, userId));
     return;
   }
 
-  if (action === 'refresh' || action === 'back') {
-    const players = await getAmongUsPlayers(session.session_id);
-    await updateV2(interaction, buildPlayerListPanel(ctx, session, players));
+  if (action === 'refresh') {
+    await updateV2(interaction);
+    return;
+  }
+
+  if (action === 'back') {
+    await backView(interaction);
     return;
   }
 
@@ -1005,21 +1110,12 @@ async function handlePlayersInteraction(interaction: Interaction): Promise<void>
       await replyEphemeral(interaction, '❌ إدارة المساعدين متاحة للمضيف الأساسي أو الإدارة فقط.');
       return;
     }
-    const helpers = await getAmongUsHelperIds(session.session_id);
-    await updateV2(interaction, buildHelpersPanel(ctx, session, helpers));
+    await showView(interaction, helpersView(guild, interaction.user.id, session.session_id));
     return;
   }
 
   if (action === 'close') {
-    await updateV2(
-      interaction,
-      buildV2Panel({
-        accentColor: 0x747f8d,
-        title: '👥 Manage Players Closed',
-        sections: [{ text: 'تم إغلاق قائمة اللاعبين. استخدم اللوحة للعودة.' }],
-        footerText: 'Blade X · Among Us Manager',
-      }),
-    );
+    await backView(interaction);
   }
 }
 
@@ -1040,8 +1136,7 @@ async function handlePlayerAction(interaction: Interaction): Promise<void> {
   if (!(await canOperateOrReply(interaction, ctx, session))) return;
 
   if (action === 'back') {
-    const players = await getAmongUsPlayers(session.session_id);
-    await updateV2(interaction, buildPlayerListPanel(ctx, session, players));
+    await backView(interaction);
     return;
   }
 
@@ -1063,30 +1158,15 @@ async function handlePlayerAction(interaction: Interaction): Promise<void> {
     return;
   }
 
-  const panelError = await refreshPanel(interaction, ctx, result.session ?? null);
+  const panelError = await renderPanelView(interaction.client, ctx.guild.id);
   const freshSession = await getAmongUsSession(session.session_id);
   const freshPlayer = await getAmongUsPlayer(session.session_id, targetUserId);
+  const notice = `${result.message}${panelError.ok ? '' : `\n⚠️ ${panelError.error ?? 'تعذر تحديث اللوحة.'}`}`;
 
   if (freshSession && freshPlayer) {
-    await editV2(
-      interaction,
-      buildPlayerActionPanel(
-        ctx,
-        freshSession,
-        freshPlayer,
-        `${result.message}${panelError ? `\n⚠️ ${panelError}` : ''}`,
-      ),
-    );
+    await renderPanelView(interaction.client, ctx.guild.id, notice, interaction);
   } else {
-    const players = freshSession ? await getAmongUsPlayers(freshSession.session_id) : [];
-    await editV2(
-      interaction,
-      buildPlayerListPanel(
-        ctx,
-        freshSession ?? session,
-        players,
-      ),
-    );
+    await backView(interaction);
   }
 }
 
@@ -1185,11 +1265,12 @@ async function handleHelpersInteraction(interaction: Interaction): Promise<void>
       const result = await addSessionHelper(guild, session.session_id, userId, interaction.user.id);
       notices.push(result.message);
     }
-    const helpers = await getAmongUsHelperIds(session.session_id);
-    await updateV2(interaction, buildHelpersPanel(ctx, session, helpers));
-    if (notices.length > 0) {
-      await interaction.followUp({ content: notices.join('\n'), flags: MessageFlags.Ephemeral }).catch(() => undefined);
-    }
+    await renderPanelView(
+      interaction.client,
+      guild.id,
+      notices.length > 0 ? notices.join('\n') : undefined,
+      interaction,
+    );
     return;
   }
 
@@ -1197,8 +1278,7 @@ async function handleHelpersInteraction(interaction: Interaction): Promise<void>
     for (const userId of interaction.values) {
       await removeSessionHelper(guild, session.session_id, userId, interaction.user.id);
     }
-    const helpers = await getAmongUsHelperIds(session.session_id);
-    await updateV2(interaction, buildHelpersPanel(ctx, session, helpers));
+    await updateV2(interaction);
     return;
   }
 }
@@ -1305,8 +1385,8 @@ function buildSettingsPanel(
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
         .setCustomId(buildId('settings', ctx.guild.id, 'back'))
-        .setLabel('Close')
-        .setEmoji('✖️')
+        .setLabel('Back')
+        .setEmoji('◀️')
         .setStyle(ButtonStyle.Secondary),
     ),
   );
@@ -1388,19 +1468,21 @@ async function handleSettingsInteraction(interaction: Interaction): Promise<void
   if (action === 'voice' && interaction.isChannelSelectMenu()) {
     const channelId = interaction.values[0];
     if (session) {
-      await updateV2(
+      await renderPanelView(
+        interaction.client,
+        guild.id,
+        '⚠️ لا يمكن تغيير الروم الصوتي أثناء وجود جلسة نشطة.',
         interaction,
-        buildSettingsPanel(ctx, session, '⚠️ لا يمكن تغيير الروم الصوتي أثناء وجود جلسة نشطة.'),
       );
       return;
     }
-    await updateV2(interaction, buildVoiceConfirmPanel(ctx, channelId, 'voice'));
+    await showView(interaction, voiceConfirmView(guild, interaction.user.id, channelId, 'voice'));
     return;
   }
 
   if (action === 'control' && interaction.isChannelSelectMenu()) {
     const channelId = interaction.values[0];
-    await updateV2(interaction, buildVoiceConfirmPanel(ctx, channelId, 'control'));
+    await showView(interaction, voiceConfirmView(guild, interaction.user.id, channelId, 'control'));
     return;
   }
 
@@ -1409,7 +1491,7 @@ async function handleSettingsInteraction(interaction: Interaction): Promise<void
     const fresh = await getAmongUsSettings(guild.id);
     if (!fresh) return;
     ctx.settings = fresh;
-    await updateV2(interaction, buildSettingsPanel(ctx, session, '✅ تم تحديث رتب المضيفين.'));
+    await renderPanelView(interaction.client, guild.id, '✅ تم تحديث رتب المضيفين.', interaction);
     return;
   }
 
@@ -1420,7 +1502,7 @@ async function handleSettingsInteraction(interaction: Interaction): Promise<void
     const fresh = await getAmongUsSettings(guild.id);
     if (!fresh) return;
     ctx.settings = fresh;
-    await updateV2(interaction, buildSettingsPanel(ctx, session, '✅ تم تحديث رتب المساعدين.'));
+    await renderPanelView(interaction.client, guild.id, '✅ تم تحديث رتب المساعدين.', interaction);
     return;
   }
 
@@ -1429,7 +1511,7 @@ async function handleSettingsInteraction(interaction: Interaction): Promise<void
     const fresh = await getAmongUsSettings(guild.id);
     if (!fresh) return;
     ctx.settings = fresh;
-    await updateV2(interaction, buildSettingsPanel(ctx, session, '✅ تم تحديث قناة السجلات.'));
+    await renderPanelView(interaction.client, guild.id, '✅ تم تحديث قناة السجلات.', interaction);
     return;
   }
 
@@ -1439,39 +1521,28 @@ async function handleSettingsInteraction(interaction: Interaction): Promise<void
       controlChannelId: ctx.settings.control_channel_id,
       logChannelId: ctx.settings.log_channel_id,
     });
-    await updateV2(interaction, buildSettingsPanel(ctx, session, undefined, check));
+    await showView(interaction, settingsView(guild, interaction.user.id, check));
     return;
   }
 
   if (action === 'republish' && interaction.isButton()) {
-    await deferUpdateSafe(interaction);
-    const error = await refreshPanel(interaction, ctx, session);
-    await editV2(
+    const result = await renderPanelView(interaction.client, guild.id);
+    await renderPanelView(
+      interaction.client,
+      guild.id,
+      result.ok ? '✅ تم تحديث لوحة التحكم.' : `⚠️ ${result.error ?? 'تعذر التحديث.'}`,
       interaction,
-      buildSettingsPanel(
-        ctx,
-        session,
-        error ? `⚠️ ${error}` : '✅ تم تحديث/إعادة نشر لوحة التحكم.',
-      ),
     );
     return;
   }
 
   if (action === 'back' && interaction.isButton()) {
-    await updateV2(
-      interaction,
-      buildV2Panel({
-        accentColor: 0x747f8d,
-        title: '⚙️ Settings Closed',
-        sections: [{ text: 'تم إغلاق الإعدادات. استخدم `/amongus` أو زر Settings للعودة.' }],
-        footerText: 'Blade X · Among Us Manager',
-      }),
-    );
+    await backView(interaction);
     return;
   }
 
   if (action === 'cancel' && interaction.isButton()) {
-    await updateV2(interaction, buildSettingsPanel(ctx, session, 'تم إلغاء التغيير.'));
+    await renderPanelView(interaction.client, guild.id, 'تم إلغاء التغيير.', interaction);
     return;
   }
 
@@ -1479,29 +1550,29 @@ async function handleSettingsInteraction(interaction: Interaction): Promise<void
     const channelId = parts[4];
     await deferUpdateSafe(interaction);
     if (session) {
-      await editV2(
+      await renderPanelView(
+        interaction.client,
+        guild.id,
+        '⚠️ لا يمكن تغيير الروم الصوتي أثناء وجود جلسة نشطة.',
         interaction,
-        buildSettingsPanel(ctx, session, '⚠️ لا يمكن تغيير الروم الصوتي أثناء وجود جلسة نشطة.'),
       );
       return;
     }
     const channel = await guild.channels.fetch(channelId).catch(() => null);
     if (!channel || (channel.type !== ChannelType.GuildVoice && channel.type !== ChannelType.GuildStageVoice)) {
-      await editV2(interaction, buildSettingsPanel(ctx, session, '❌ القناة الصوتية غير صالحة.'));
+      await renderPanelView(interaction.client, guild.id, '❌ القناة الصوتية غير صالحة.', interaction);
       return;
     }
     await setAmongUsChannels(guild.id, { voice_channel_id: channel.id });
     const fresh = await getAmongUsSettings(guild.id);
     if (!fresh) return;
     ctx.settings = fresh;
-    const panelError = await refreshPanel(interaction, ctx, null);
-    await editV2(
+    const panelError = await renderPanelView(interaction.client, guild.id);
+    await renderPanelView(
+      interaction.client,
+      guild.id,
+      `✅ تم تغيير الروم الصوتي إلى <#${channel.id}>.${panelError.ok ? '' : `\n⚠️ ${panelError.error ?? 'تعذر التحديث.'}`}`,
       interaction,
-      buildSettingsPanel(
-        ctx,
-        null,
-        `✅ تم تغيير الروم الصوتي إلى <#${channel.id}>.${panelError ? `\n⚠️ ${panelError}` : ''}`,
-      ),
     );
     await recordEvent({
       guildId: guild.id,
@@ -1522,7 +1593,7 @@ async function handleSettingsInteraction(interaction: Interaction): Promise<void
     const oldSettings = ctx.settings;
     const channel = await guild.channels.fetch(channelId).catch(() => null);
     if (!channel || (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement)) {
-      await editV2(interaction, buildSettingsPanel(ctx, session, '❌ القناة النصية غير صالحة.'));
+      await renderPanelView(interaction.client, guild.id, '❌ القناة النصية غير صالحة.', interaction);
       return;
     }
 
@@ -1531,7 +1602,7 @@ async function handleSettingsInteraction(interaction: Interaction): Promise<void
     const fresh = await getAmongUsSettings(guild.id);
     if (!fresh) return;
 
-    const panel = await updateDashboardMessage(interaction.client, guild.id, fresh, session);
+    const panel = await ensureMainPanel(interaction.client, guild.id);
     if (!panel.ok) {
       // Revert to the previous control channel.
       await setAmongUsChannels(guild.id, {
@@ -1544,9 +1615,11 @@ async function handleSettingsInteraction(interaction: Interaction): Promise<void
       );
       const reverted = await getAmongUsSettings(guild.id);
       if (reverted) ctx.settings = reverted;
-      await editV2(
+      await renderPanelView(
+        interaction.client,
+        guild.id,
+        `❌ فشل نشر اللوحة في القناة الجديدة: ${panel.error ?? 'خطأ'}`,
         interaction,
-        buildSettingsPanel(ctx, session, `❌ فشل نشر اللوحة في القناة الجديدة: ${panel.error ?? 'خطأ'}`),
       );
       return;
     }
@@ -1574,13 +1647,11 @@ async function handleSettingsInteraction(interaction: Interaction): Promise<void
 
     const refreshed = await getAmongUsSettings(guild.id);
     if (refreshed) ctx.settings = refreshed;
-    await editV2(
+    await renderPanelView(
+      interaction.client,
+      guild.id,
+      `✅ تم تغيير قناة التحكم إلى <#${channel.id}>.`,
       interaction,
-      buildSettingsPanel(
-        ctx,
-        session,
-        `✅ تم تغيير قناة التحكم إلى <#${channel.id}> ونشر اللوحة.`,
-      ),
     );
     await recordEvent({
       guildId: guild.id,
@@ -1629,6 +1700,11 @@ function buildEndSessionConfirm(
           .setCustomId(buildId('panel', ctx.guild.id, 'endsession-cancel', session.session_id))
           .setLabel('Cancel')
           .setEmoji('✖️')
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId(buildId('panel', ctx.guild.id, 'endsession-back', session.session_id))
+          .setLabel('Back')
+          .setEmoji('◀️')
           .setStyle(ButtonStyle.Secondary),
       ),
     ] as any,

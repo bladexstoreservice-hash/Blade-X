@@ -987,9 +987,8 @@ export async function restoreSessionsAfterRestart(
         'System recovery after restart — review mics',
       );
 
-      const freshSession = await db.getAmongUsSession(session.session_id);
-      const { updateDashboardMessage } = await import('./panel.js');
-      await updateDashboardMessage(client, session.guild_id, settings, freshSession ?? session);
+      const { renderPanelView } = await import('./navigation.js');
+      await renderPanelView(client, session.guild_id);
 
       await recordEvent({
         guildId: session.guild_id,
@@ -1000,7 +999,7 @@ export async function restoreSessionsAfterRestart(
         client,
         guild,
         settings,
-        session: freshSession ?? session,
+        session,
         notifyHostText:
           '🟠 تمت استعادة الجلسة بعد إعادة التشغيل. راجع المايكات ثم اضغط **Resume Control**.',
         notifyKey: 'restart-recovery',

@@ -101,18 +101,9 @@ export async function recordEvent(input: AmongUsEventInput): Promise<void> {
     console.warn('[Blade X] ⚠️ Among Us event log failed:', e);
   }
 
-  if (input.notifyHostText && input.client && input.session) {
-    const settings =
-      input.settings ?? (await getAmongUsSettings(input.guildId).catch(() => null));
-    await sendHostNotice(
-      input.client,
-      input.guild,
-      settings,
-      input.session,
-      input.notifyHostText,
-      input.notifyKey ?? input.action,
-    );
-  }
+  // Control-channel host pings are intentionally disabled: all status is
+  // shown inside the single control panel. Audit rows and the configured
+  // log-channel embed below are preserved.
 
   if (!input.client) return;
   const settings = input.settings ?? (await getAmongUsSettings(input.guildId).catch(() => null));

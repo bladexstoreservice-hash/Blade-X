@@ -14,7 +14,7 @@ import {
   updateAmongUsPlayer,
 } from '../database.js';
 import { recordEvent } from '../logger.js';
-import { updateDashboardMessage } from '../panel.js';
+import { renderPanelView } from '../navigation.js';
 import { withGuildLock } from '../session.js';
 import type { AmongUsPlayer, AmongUsSession } from '../types.js';
 import { applyPlayerMute, persistVoiceResult, type VoiceActionResult } from '../voice.js';
@@ -78,9 +78,9 @@ async function refreshPanel(sessionId: string): Promise<void> {
   if (!clientRef) return;
   const session = await getAmongUsSession(sessionId);
   if (!session) return;
-  const settings = await getAmongUsSettings(session.guild_id);
-  if (!settings) return;
-  await updateDashboardMessage(clientRef, session.guild_id, settings, session).catch(() => undefined);
+  // Render whatever view is currently open in the single panel (main or a
+  // sub-page) instead of forcing a separate dashboard edit/message.
+  await renderPanelView(clientRef, session.guild_id).catch(() => undefined);
 }
 
 async function log(

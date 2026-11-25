@@ -222,7 +222,7 @@ export function buildSpeakingSettingsPanel(
       button(guildId, 'toggle-quick', 'Quick: ' + (settings.quickEnabled ? 'ON' : 'OFF'), '⚡', ButtonStyle.Secondary),
       button(guildId, 'toggle-rr', 'Round Robin: ' + (settings.mandatoryRoundRobin ? 'ON' : 'OFF'), '🔄', ButtonStyle.Secondary),
       button(guildId, 'toggle-priority', 'Priority: ' + (settings.quickPriority === 'end' ? 'END' : 'NEXT'), '📊', ButtonStyle.Secondary),
-      button(guildId, 'back', 'Close', '✖️', ButtonStyle.Secondary),
+      button(guildId, 'back', 'Back', '◀️', ButtonStyle.Secondary),
     ),
   );
 
@@ -306,6 +306,11 @@ export function buildDeadSelectPanel(
         .setLabel('Cancel')
         .setEmoji('✖️')
         .setStyle(ButtonStyle.Danger),
+      new ButtonBuilder()
+        .setCustomId(buildId('meet', guildId, sessionId, 'back'))
+        .setLabel('Back')
+        .setEmoji('◀️')
+        .setStyle(ButtonStyle.Secondary),
     ),
   );
 

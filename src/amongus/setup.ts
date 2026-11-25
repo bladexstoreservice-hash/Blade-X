@@ -26,6 +26,15 @@ import { updateDashboardMessage } from './panel.js';
 import { canManageSettings, getAccessContext } from './permissions.js';
 import type { AmongUsSettings } from './types.js';
 import { buildV2Panel, buildV2Payload } from '../ui/v2.js';
+import {
+  currentViewKind,
+  ensureMainPanel,
+  goBack,
+  navigateTo,
+  renderPanelView,
+  resetToMain,
+  type PanelView,
+} from './navigation.js';
 
 export interface SetupCheckResult {
   ok: boolean;
@@ -405,29 +414,26 @@ function buildSetupContainer(guild: Guild, draft: SetupDraft): ReturnType<typeof
   });
 }
 
+function setupView(guild: Guild, draft: SetupDraft): PanelView {
+  return {
+    kind: 'setup',
+    render: async () => buildSetupContainer(guild, draft),
+  };
+}
+
+/** Every wizard step replaces the content of the SAME panel message. */
 async function renderSetup(
   interaction: Interaction,
   draft: SetupDraft,
-  update: boolean,
+  _update: boolean,
 ): Promise<void> {
   const guild = interaction.guild;
   if (!guild) return;
-  const container = buildSetupContainer(guild, draft);
-  const payload = { ...(buildV2Payload(container) as any), allowedMentions: { parse: [] } };
-
-  if (update && interaction.isMessageComponent()) {
-    if (interaction.deferred || interaction.replied) {
-      await interaction.editReply(payload).catch(() => undefined);
-    } else {
-      await interaction.update(payload).catch(() => undefined);
-    }
+  if (currentViewKind(guild.id) === 'setup') {
+    await renderPanelView(interaction.client, guild.id, draft.lastError ?? null, interaction);
     return;
   }
-  if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
-    await interaction.reply({ ...payload, flags: payload.flags | 64 }).catch(() => undefined);
-  } else if (interaction.isRepliable()) {
-    await interaction.editReply(payload).catch(() => undefined);
-  }
+  await navigateTo(interaction.client, guild.id, setupView(guild, draft), interaction);
 }
 
 export async function startSetup(interaction: Interaction): Promise<void> {
@@ -438,7 +444,9 @@ export async function startSetup(interaction: Interaction): Promise<void> {
   const settings = await getAmongUsSettings(guild.id);
   const draft = draftFromSettings(settings, guild.id, interaction.user.id);
   drafts.set(guild.id, draft);
-  await renderSetup(interaction, draft, false);
+  // Make sure the one persistent message exists before rendering step 0 in it.
+  await ensureMainPanel(interaction.client, guild.id);
+  await navigateTo(interaction.client, guild.id, setupView(guild, draft), interaction);
 }
 
 function validateStep(draft: SetupDraft): string | null {
@@ -469,11 +477,13 @@ async function finalizeSetup(interaction: Interaction, draft: SetupDraft): Promi
     return;
   }
 
+  // Keep the existing panel message id so setup never mints a second panel.
+  const existingSettings = await getAmongUsSettings(guild.id);
   await upsertAmongUsSettings({
     guild_id: guild.id,
     voice_channel_id: draft.voiceChannelId,
     control_channel_id: draft.controlChannelId,
-    control_message_id: null,
+    control_message_id: existingSettings?.control_message_id ?? null,
     host_role_ids: draft.hostRoleIds,
     helper_role_ids: draft.helperRoleIds,
     log_channel_id: draft.logChannelId,
@@ -489,10 +499,10 @@ async function finalizeSetup(interaction: Interaction, draft: SetupDraft): Promi
     return;
   }
 
-  const panel = await updateDashboardMessage(interaction.client, guild.id, saved, null);
+  const panel = await ensureMainPanel(interaction.client, guild.id);
   if (!panel.ok) {
     await setAmongUsSetupCompleted(guild.id, false);
-    draft.lastError = `فشل إنشاء لوحة التحكم: ${panel.error ?? 'خطأ غير معروف'}`;
+    draft.lastError = `فشل تجهيز لوحة التحكم: ${panel.error ?? 'خطأ غير معروف'}`;
     draft.step = 5;
     draft.updatedAt = Date.now();
     await renderSetup(interaction, draft, true);
@@ -514,30 +524,13 @@ async function finalizeSetup(interaction: Interaction, draft: SetupDraft): Promi
     notifyHostText: undefined,
   });
 
-  const success = buildV2Panel({
-    accentColor: 0x57f287,
-    title: '✅ Among Us Manager — Ready',
-    description: `-# ${guild.name}`,
-    sections: [
-      {
-        text:
-          'تم حفظ الإعدادات وإنشاء لوحة التحكم الأساسية بنجاح.\n' +
-          `**قناة التحكم:** <#${saved.control_channel_id}>\n` +
-          'استخدم `/amongus` لفتح النظام أو انتقل إلى رسالة اللوحة في القناة.',
-      },
-      {
-        text: `-# Panel: ${panel.messageId ? `\`${panel.messageId}\`` : 'تم الإنشاء'}`,
-      },
-    ],
-    footerText: 'Blade X · Among Us Manager',
-  });
-
-  if (interaction.isMessageComponent()) {
-    await interaction.editReply({
-      ...(buildV2Payload(success) as any),
-      allowedMentions: { parse: [] },
-    }).catch(() => undefined);
-  }
+  // The same message now becomes the main panel, with the notice inside it.
+  await resetToMain(
+    interaction.client,
+    guild.id,
+    interaction,
+    `✅ تم حفظ الإعدادات — اللوحة جاهزة في <#${saved.control_channel_id}>.`,
+  );
 }
 
 export async function handleSetupInteraction(interaction: Interaction): Promise<void> {
@@ -683,17 +676,7 @@ export async function handleSetupInteraction(interaction: Interaction): Promise<
       return;
     case 'cancel':
       drafts.delete(guild.id);
-      await interaction.update({
-        ...(buildV2Payload(
-          buildV2Panel({
-            accentColor: 0x747f8d,
-            title: '✖️ Setup Cancelled',
-            description: `-# ${guild.name}`,
-            sections: [{ text: 'تم إلغاء إعداد Among Us Manager. لم يتم حفظ أي تغييرات.' }],
-            footerText: 'Blade X · Among Us Setup',
-          }),
-        ) as any),
-      }).catch(() => undefined);
+      await resetToMain(interaction.client, guild.id, interaction, 'تم إلغاء الإعداد — لم يتم حفظ أي تغييرات.');
       return;
     default:
       return;
